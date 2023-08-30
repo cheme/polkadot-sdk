@@ -23,9 +23,10 @@ use sc_executor_common::{
 	wasm_runtime::{HeapAllocStrategy, InvokeMethod, WasmModule as _},
 };
 use sc_executor_wasmtime::{Config, DeterministicStackLimit, Semantics, WasmtimeRuntime};
-use sp_core::storage::{ChildInfo, TrackedStorageKey};
+use sp_core::storage::{ChildInfo, TrackedStorageKey, transient::{HasherHandle, Hash32Algorithm}};
 use sp_externalities::MultiRemovalResults;
 use std::any::{Any, TypeId};
+use std::borrow::Cow;
 
 // Memory configuration
 //
@@ -207,20 +208,30 @@ type HostFunctions = (
 struct ValidationExternalities(sp_externalities::Extensions);
 
 impl sp_externalities::Externalities for ValidationExternalities {
-	fn storage(&self, _: &[u8]) -> Option<Vec<u8>> {
+	fn storage(&mut self, _: &[u8], _: u32, _: Option<u32>) -> Option<Cow<[u8]>> {
 		panic!("storage: unsupported feature for parachain validation")
 	}
 
-	fn storage_hash(&self, _: &[u8]) -> Option<Vec<u8>> {
+	fn storage_hash(&mut self, _: &[u8]) -> Option<Vec<u8>> {
 		panic!("storage_hash: unsupported feature for parachain validation")
 	}
 
-	fn child_storage_hash(&self, _: &ChildInfo, _: &[u8]) -> Option<Vec<u8>> {
+	fn child_storage_hash(&mut self, _: &ChildInfo, _: &[u8]) -> Option<Vec<u8>> {
 		panic!("child_storage_hash: unsupported feature for parachain validation")
 	}
 
-	fn child_storage(&self, _: &ChildInfo, _: &[u8]) -> Option<Vec<u8>> {
+	fn child_storage<'a>(
+		&'a mut self,
+		_child_info: &ChildInfo,
+		_key: &[u8],
+		_start: u32,
+		_limit: Option<u32>,
+	) -> Option<Cow<'a, [u8]>> {
 		panic!("child_storage: unsupported feature for parachain validation")
+	}
+
+	fn child_storage_len(&mut self, _child_info: &ChildInfo, _key: &[u8]) -> Option<u32> {
+		panic!("child_storage_len: unsupported feature for parachain validation")
 	}
 
 	fn kill_child_storage(
@@ -255,7 +266,7 @@ impl sp_externalities::Externalities for ValidationExternalities {
 		panic!("place_storage: unsupported feature for parachain validation")
 	}
 
-	fn place_child_storage(&mut self, _: &ChildInfo, _: Vec<u8>, _: Option<Vec<u8>>) {
+	fn place_child_storage(&mut self, _: &ChildInfo, _: &[u8], _: Option<&[u8]>) -> bool {
 		panic!("place_child_storage: unsupported feature for parachain validation")
 	}
 
@@ -263,15 +274,20 @@ impl sp_externalities::Externalities for ValidationExternalities {
 		panic!("storage_root: unsupported feature for parachain validation")
 	}
 
-	fn child_storage_root(&mut self, _: &ChildInfo, _: sp_core::storage::StateVersion) -> Vec<u8> {
+	fn child_storage_root(&mut self, _: &ChildInfo, _: sp_core::storage::StateVersion) -> Option<Vec<u8>> {
 		panic!("child_storage_root: unsupported feature for parachain validation")
 	}
 
-	fn next_child_storage_key(&self, _: &ChildInfo, _: &[u8]) -> Option<Vec<u8>> {
+	fn next_child_storage_key(
+		&mut self,
+		_child_info: &ChildInfo,
+		_key: &[u8],
+		_count: u32,
+	) -> Option<Vec<Vec<u8>>> {
 		panic!("next_child_storage_key: unsupported feature for parachain validation")
 	}
 
-	fn next_storage_key(&self, _: &[u8]) -> Option<Vec<u8>> {
+	fn next_storage_key(&mut self, _: &[u8]) -> Option<Vec<u8>> {
 		panic!("next_storage_key: unsupported feature for parachain validation")
 	}
 
@@ -321,6 +337,76 @@ impl sp_externalities::Externalities for ValidationExternalities {
 
 	fn get_read_and_written_keys(&self) -> Vec<(Vec<u8>, u32, u32, bool)> {
 		panic!("get_read_and_written_keys: unsupported feature for parachain validation")
+	}
+
+	fn update_storage_info(&mut self, _info: ChildInfo, _clear_existing: bool) -> bool {
+		panic!("update_storage_info: unsupported feature for parachain validation")
+	}
+
+	fn storage_exists(&mut self, _info: &ChildInfo) -> bool {
+		panic!("storage_exists: unsupported feature for parachain validation")
+	}
+
+	fn storage_clone(&mut self, _info: &ChildInfo, _target_name: &[u8]) -> bool {
+		panic!("storage_clone: unsupported feature for parachain validation")
+	}
+
+	fn storage_move(&mut self, _info: &ChildInfo, _target_name: &[u8]) -> bool {
+		panic!("storage_move: unsupported feature for parachain validation")
+	}
+
+	fn blob_set(&mut self, _name: &[u8], _value: &[u8], _offset: u32) -> bool {
+		panic!("blob_set: unsupported feature for parachain validation")
+	}
+
+	fn blob_truncate(&mut self, _name: &[u8], _new_size: u32) -> bool {
+		panic!("blob_truncate: unsupported feature for parachain validation")
+	}
+
+	fn blob_len(&mut self, _name: &[u8]) -> Option<u32> {
+		panic!("blob_len: unsupported feature for parachain validation")
+	}
+
+
+	fn map_hash32_item(
+		&mut self,
+		_name: &[u8],
+		_key: &[u8],
+		_algorithm: Hash32Algorithm,
+	) -> Option<[u8; 32]> {
+		panic!("map_hash32_item: unsupported feature for parachain validation")
+	}
+
+	fn map_count(&mut self, _name: &[u8]) -> Option<u32> {
+		panic!("map_count: unsupported feature for parachain validation")
+	}
+
+	fn map_dump(&mut self, _name: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+		panic!("map_dump: unsupported feature for parachain validation")
+	}
+
+	fn map_dump_hashed(
+		&mut self,
+		_name: &[u8],
+		_algorithm: Hash32Algorithm,
+	) -> Option<Vec<([u8; 32], [u8; 32])>> {
+		panic!("map_dump_hashed: unsupported feature for parachain validation")
+	}
+
+	fn get_hasher(&mut self, _algorithm: Hash32Algorithm) -> Option<HasherHandle> {
+		panic!("get_hasher: unsupported feature for parachain validation")
+	}
+
+	fn drop_hasher(&mut self, _hasher: Option<HasherHandle>) {
+		panic!("drop_hasher: unsupported feature for parachain validation")
+	}
+
+	fn hasher_update(&mut self, _hasher: HasherHandle, _data: &[u8]) -> bool {
+		panic!("hasher_update: unsupported feature for parachain validation")
+	}
+
+	fn hasher_finalize(&mut self, _hasher: HasherHandle) -> Option<[u8; 32]> {
+		panic!("hasher_finalize: unsupported feature for parachain validation")
 	}
 }
 
