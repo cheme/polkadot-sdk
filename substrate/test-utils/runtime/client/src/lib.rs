@@ -166,14 +166,14 @@ pub trait TestClientBuilderExt<B>: Sized {
 		let key = key.into();
 		assert!(!storage_key.is_empty());
 		assert!(!key.is_empty());
-		self.genesis_init_mut()
-			.extra_storage
-			.children_default
+		let ChildInfo::Default(info) = child_info else {
+			log::warn!("Skipping transient storage for genesis.");
+			return self
+		};
+		let child_map = &mut self.genesis_init_mut().extra_storage.children_default;
+		child_map
 			.entry(storage_key)
-			.or_insert_with(|| StorageChild {
-				data: Default::default(),
-				child_info: child_info.clone(),
-			})
+			.or_insert_with(|| StorageDefaultChild { data: Default::default(), info: info.clone() })
 			.data
 			.insert(key, value.into());
 		self

@@ -287,7 +287,11 @@ pub fn read_trie_value<L: TrieLayout, DB: hash_db::HashDBRef<L::Hash, trie_db::D
 	key: &[u8],
 	recorder: Option<&mut dyn TrieRecorder<TrieHash<L>>>,
 	cache: Option<&mut dyn TrieCache<L::Codec>>,
-) -> Result<Option<Vec<u8>>, Box<TrieError<L>>> {
+) -> Result<Option<Vec<u8>>, Box<TrieError<L>>>
+where
+	L: TrieConfiguration,
+	DB: hash_db::HashDBRef<L::Hash, trie_db::DBValue>,
+{
 	TrieDBBuilder::<L>::new(db, root)
 		.with_optional_cache(cache)
 		.with_optional_recorder(recorder)
@@ -296,6 +300,7 @@ pub fn read_trie_value<L: TrieLayout, DB: hash_db::HashDBRef<L::Hash, trie_db::D
 }
 
 /// Read a value from the trie with given Query.
+/// TODO add recorder and cache, this is a footgun
 pub fn read_trie_value_with<
 	L: TrieLayout,
 	Q: Query<L::Hash, Item = Vec<u8>>,
@@ -357,7 +362,7 @@ where
 }
 
 /// Read a value from the child trie.
-pub fn read_child_trie_value<L: TrieConfiguration, DB>(
+pub fn read_child_trie_value<L, DB>(
 	keyspace: &[u8],
 	db: &DB,
 	root: &TrieHash<L>,
@@ -366,15 +371,15 @@ pub fn read_child_trie_value<L: TrieConfiguration, DB>(
 	cache: Option<&mut dyn TrieCache<L::Codec>>,
 ) -> Result<Option<Vec<u8>>, Box<TrieError<L>>>
 where
+	L: TrieConfiguration,
 	DB: hash_db::HashDBRef<L::Hash, trie_db::DBValue>,
 {
-	let db = KeySpacedDB::new(db, keyspace);
+	let db = KeySpacedDB::new(&*db, keyspace);
 	TrieDBBuilder::<L>::new(&db, &root)
 		.with_optional_recorder(recorder)
 		.with_optional_cache(cache)
 		.build()
 		.get(key)
-		.map(|x| x.map(|val| val.to_vec()))
 }
 
 /// Read a hash from the child trie.
@@ -398,6 +403,7 @@ where
 }
 
 /// Read a value from the child trie with given query.
+/// TODO same should use cache and recorder to prevent misuse.
 pub fn read_child_trie_value_with<L, Q, DB>(
 	keyspace: &[u8],
 	db: &DB,

@@ -254,8 +254,11 @@ where
 
 		let prefixed_key = PrefixedStorageKey::new_ref(&request.storage_key);
 		let child_info = match ChildType::from_prefixed_key(prefixed_key) {
-			Some((ChildType::ParentKeyId, storage_key)) => Ok(ChildInfo::new_default(storage_key)),
-			None => Err(sp_blockchain::Error::InvalidChildStorageKey),
+			Some((ChildType::Default, storage_key)) => Ok(ChildInfo::new_default(storage_key)),
+			// TODO do some proof over a given storage root, would be a different
+			// api.
+			Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+				Err(sp_blockchain::Error::InvalidChildStorageKey),
 		};
 		let response = match child_info.and_then(|child_info| {
 			self.client.read_child_proof(

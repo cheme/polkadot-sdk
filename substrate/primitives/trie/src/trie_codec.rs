@@ -21,7 +21,8 @@
 //! it to substrate specific layout and child trie system.
 
 use crate::{CompactProof, HashDBT, TrieConfiguration, TrieHash, EMPTY_PREFIX};
-use sp_std::{boxed::Box, vec::Vec};
+use sp_core::storage::{well_known_keys, ChildType, PrefixedStorageKey};
+use sp_std::{boxed::Box, vec, vec::Vec};
 use trie_db::{CError, Trie};
 
 /// Error for trie node decoding.
@@ -40,6 +41,11 @@ pub enum Error<H, CodecError> {
 	InvalidChildRoot(Vec<u8>, Vec<u8>),
 	#[cfg_attr(feature = "std", error("Trie error: {0:?}"))]
 	TrieError(Box<trie_db::TrieError<H, CodecError>>),
+	#[cfg_attr(feature = "std", error("Ordered map storage error: {0:?}"))]
+	OrderedMapStorageError(Box<trie_db::TrieError<H, crate::error::Error<H>>>),
+	// TODO assert if use
+	#[cfg_attr(feature = "std", error("Blob storage error: {0:?}"))]
+	BlobStorageError(&'static str),
 }
 
 impl<H, CodecError> From<Box<trie_db::TrieError<H, CodecError>>> for Error<H, CodecError> {
@@ -82,20 +88,30 @@ where
 
 		let mut iter = trie.iter()?;
 
-		let childtrie_roots = sp_core::storage::well_known_keys::DEFAULT_CHILD_STORAGE_KEY_PREFIX;
+		let childtrie_roots = well_known_keys::CHILD_STORAGE_KEY_PREFIX;
 		if iter.seek(childtrie_roots).is_ok() {
 			loop {
 				match iter.next() {
-					Some(Ok((key, value))) if key.starts_with(childtrie_roots) => {
-						// we expect all default child trie root to be correctly encoded.
-						// see other child trie functions.
-						let mut root = TrieHash::<L>::default();
-						// still in a proof so prevent panic
-						if root.as_mut().len() != value.as_slice().len() {
-							return Err(Error::InvalidChildRoot(key, value))
+					Some(Ok((key, value))) => {
+						let prefixed_key = PrefixedStorageKey::new_ref(&key);
+						match ChildType::from_prefixed_key(prefixed_key) {
+							Some((ChildType::Blob, _unprefixed)) |
+							Some((ChildType::OrderedMap, _unprefixed)) => {
+								// reserved non persistent, skip
+							},
+							Some((child_type, _unprefixed)) => {
+								// we expect all default child trie root to be correctly encoded.
+								// see other child trie functions.
+								let mut root = TrieHash::<L>::default();
+								// still in a proof so prevent panic
+								if root.as_mut().len() != value.as_slice().len() {
+									return Err(Error::InvalidChildRoot(key, value))
+								}
+								root.as_mut().copy_from_slice(value.as_ref());
+								child_tries.push((root, child_type));
+							},
+							None => break,
 						}
-						root.as_mut().copy_from_slice(value.as_ref());
-						child_tries.push(root);
 					},
 					// allow incomplete database error: we only
 					// require access to data in the proof.
@@ -103,7 +119,7 @@ where
 						trie_db::TrieError::IncompleteDatabase(..) => (),
 						e => return Err(Box::new(e).into()),
 					},
-					_ => break,
+					None => break,
 				}
 			}
 		}
@@ -115,15 +131,42 @@ where
 
 	let mut previous_extracted_child_trie = None;
 	let mut nodes_iter = nodes_iter.peekable();
-	for child_root in child_tries.into_iter() {
-		if previous_extracted_child_trie.is_none() && nodes_iter.peek().is_some() {
-			let (top_root, _) = trie_db::decode_compact_from_iter::<L, _, _>(db, &mut nodes_iter)?;
-			previous_extracted_child_trie = Some(top_root);
+	let mut last_child_type = None;
+	let mut skip_till_new_type = false;
+	for (child_root, child_type) in child_tries.into_iter() {
+		let peek = nodes_iter.peek();
+		// child trie are not allowed to encode their root/first node
+		// to [trie_constants::ESCAPE_COMPACT_HEADER], otherwhise
+		// please escape it.
+		// TODO implement escape? : if double ESCAPE_COMPACT_HEADER
+		// at start, remove first.
+		if peek == Some(&&[crate::trie_constants::ESCAPE_COMPACT_HEADER][..]) {
+			skip_till_new_type = true;
+		}
+		if skip_till_new_type && last_child_type == Some(child_type) {
+			continue
+		}
+		skip_till_new_type = false;
+		last_child_type = Some(child_type);
+		if previous_extracted_child_trie.is_none() && peek.is_some() {
+			match child_type {
+				ChildType::Default => {
+					let (top_root, _) =
+						trie_db::decode_compact_from_iter::<L, _, _>(db, &mut nodes_iter)?;
+					previous_extracted_child_trie = Some(top_root);
+				},
+				ChildType::Blob | ChildType::OrderedMap => {
+					// not persistent TODO consider just reverting to master code
+					previous_extracted_child_trie = Some(top_root);
+				},
+			}
 		}
 
 		// we do not early exit on root mismatch but try the
 		// other read from proof (some child root may be
 		// in proof without actual child content).
+		// TODO this is not true anymore as we cannot mistake a child type.
+		// -> Should change code to not allow it.
 		if Some(child_root) == previous_extracted_child_trie {
 			previous_extracted_child_trie = None;
 		}
@@ -163,18 +206,31 @@ where
 
 		let mut iter = trie.iter()?;
 
-		let childtrie_roots = sp_core::storage::well_known_keys::DEFAULT_CHILD_STORAGE_KEY_PREFIX;
+		let childtrie_roots = well_known_keys::CHILD_STORAGE_KEY_PREFIX;
 		if iter.seek(childtrie_roots).is_ok() {
 			loop {
 				match iter.next() {
-					Some(Ok((key, value))) if key.starts_with(childtrie_roots) => {
-						let mut root = TrieHash::<L>::default();
-						if root.as_mut().len() != value.as_slice().len() {
-							// some child trie root in top trie are not an encoded hash.
-							return Err(Error::InvalidChildRoot(key.to_vec(), value.to_vec()))
+					Some(Ok((key, value))) => {
+						let prefixed_key = PrefixedStorageKey::new_ref(&key);
+						match ChildType::from_prefixed_key(prefixed_key) {
+							Some((ChildType::Blob, _unprefixed)) |
+							Some((ChildType::OrderedMap, _unprefixed)) => {
+								// non persistent, ignore
+							},
+							Some((child_type, _unprefixed)) => {
+								let mut root = TrieHash::<L>::default();
+								if root.as_mut().len() != value.as_slice().len() {
+									// some child trie root in top trie are not an encoded hash.
+									return Err(Error::InvalidChildRoot(
+										key.to_vec(),
+										value.to_vec(),
+									))
+								}
+								root.as_mut().copy_from_slice(value.as_ref());
+								child_tries.push((root, child_type));
+							},
+							None => break,
 						}
-						root.as_mut().copy_from_slice(value.as_ref());
-						child_tries.push(root);
 					},
 					// allow incomplete database error: we only
 					// require access to data in the proof.
@@ -190,17 +246,33 @@ where
 		trie_db::encode_compact::<L>(&trie)?
 	};
 
-	for child_root in child_tries {
+	let mut last_child = None;
+	let mut last_skipped = false;
+	for (child_root, child_type) in child_tries {
+		if last_skipped && Some(child_type) != last_child {
+			compact_proof.push(vec![crate::trie_constants::ESCAPE_COMPACT_HEADER]);
+		}
+		last_child = Some(child_type);
 		if !HashDBT::<L::Hash, _>::contains(partial_db, &child_root, EMPTY_PREFIX) {
 			// child proof are allowed to be missing (unused root can be included
 			// due to trie structure modification).
+			last_skipped = true;
 			continue
 		}
+		last_skipped = false;
 
-		let trie = crate::TrieDBBuilder::<L>::new(partial_db, &child_root).build();
-		let child_proof = trie_db::encode_compact::<L>(&trie)?;
+		match child_type {
+			ChildType::Default => {
+				let trie = crate::TrieDBBuilder::<L>::new(partial_db, &child_root).build();
+				let child_proof = trie_db::encode_compact::<L>(&trie)?;
 
-		compact_proof.extend(child_proof);
+				compact_proof.extend(child_proof);
+			},
+			ChildType::OrderedMap | ChildType::Blob => {
+				// noop, non persistant.
+				// TODO consider revert to master code
+			},
+		}
 	}
 
 	Ok(CompactProof { encoded_nodes: compact_proof })

@@ -38,7 +38,7 @@ pub use sp_arithmetic::traits::{
 	EnsureOp, EnsureOpAssign, EnsureSub, EnsureSubAssign, IntegerSquareRoot, One,
 	SaturatedConversion, Saturating, UniqueSaturatedFrom, UniqueSaturatedInto, Zero,
 };
-use sp_core::{self, storage::StateVersion, Hasher, RuntimeDebug, TypeId};
+use sp_core::{self, storage::StateVersion, Hasher, HasherHandle, Hashers, RuntimeDebug, TypeId};
 #[doc(hidden)]
 pub use sp_core::{
 	parameter_types, ConstBool, ConstI128, ConstI16, ConstI32, ConstI64, ConstI8, ConstU128,
@@ -957,6 +957,7 @@ pub trait Hash:
 	+ Eq
 	+ PartialEq
 	+ Hasher<Out = <Self as Hash>::Output>
+	+ Hashers
 {
 	/// The hash type produced.
 	type Output: HashOutput;
@@ -1034,6 +1035,39 @@ impl Hasher for BlakeTwo256 {
 	}
 }
 
+use sp_core::Hash32Algorithm;
+
+fn hash32_with_algorithm_hosts(data: &[u8], algo: Hash32Algorithm) -> [u8; 32] {
+	match algo {
+		Hash32Algorithm::Blake2b256 => sp_io::hashing::blake2_256(data).into(),
+	}
+}
+
+impl Hashers for BlakeTwo256 {
+	const IS_USING_HOST: bool = true;
+
+	fn hash_with(data: &[u8], algo: Hash32Algorithm) -> [u8; 32] {
+		// TODO unreachable it??
+		hash32_with_algorithm_hosts(data, algo)
+	}
+
+	fn hash_state_with(algo: Hash32Algorithm) -> Option<HasherHandle> {
+		sp_io::hashing::get_hasher(algo.into())
+	}
+
+	fn hash_update(state: HasherHandle, data: &[u8]) -> bool {
+		sp_io::hashing::hasher_update(state, data)
+	}
+
+	fn hash_finalize(state: HasherHandle) -> Option<[u8; 32]> {
+		sp_io::hashing::hasher_finalize(state)
+	}
+
+	fn hash_drop(state: Option<HasherHandle>) {
+		sp_io::hashing::drop_hasher(state)
+	}
+}
+
 impl Hash for BlakeTwo256 {
 	type Output = sp_core::H256;
 
@@ -1058,6 +1092,31 @@ impl Hasher for Keccak256 {
 
 	fn hash(s: &[u8]) -> Self::Out {
 		sp_io::hashing::keccak_256(s).into()
+	}
+}
+
+impl Hashers for Keccak256 {
+	const IS_USING_HOST: bool = true;
+
+	fn hash_with(data: &[u8], algo: Hash32Algorithm) -> [u8; 32] {
+		// TODO unreachable it??
+		hash32_with_algorithm_hosts(data, algo)
+	}
+
+	fn hash_state_with(algo: Hash32Algorithm) -> Option<HasherHandle> {
+		sp_io::hashing::get_hasher(algo.into())
+	}
+
+	fn hash_update(state: HasherHandle, data: &[u8]) -> bool {
+		sp_io::hashing::hasher_update(state, data)
+	}
+
+	fn hash_finalize(state: HasherHandle) -> Option<[u8; 32]> {
+		sp_io::hashing::hasher_finalize(state)
+	}
+
+	fn hash_drop(state: Option<HasherHandle>) {
+		sp_io::hashing::drop_hasher(state)
 	}
 }
 

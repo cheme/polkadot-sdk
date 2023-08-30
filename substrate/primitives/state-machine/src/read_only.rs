@@ -21,12 +21,14 @@ use crate::{Backend, StorageKey, StorageValue};
 use codec::Encode;
 use hash_db::Hasher;
 use sp_core::{
-	storage::{ChildInfo, StateVersion, TrackedStorageKey},
+	storage::{transient::Hash32Algorithm, ChildInfo, ChildType, StateVersion, TrackedStorageKey},
 	traits::Externalities,
+	HasherHandle,
 };
-use sp_externalities::MultiRemovalResults;
+use sp_externalities::{result_from_vec, MultiRemovalResults};
 use std::{
 	any::{Any, TypeId},
+	borrow::Cow,
 	marker::PhantomData,
 };
 
@@ -88,42 +90,90 @@ where
 		panic!("Should not be used in read-only externalities!")
 	}
 
-	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
+	fn storage(&mut self, key: &[u8], start: u32, limit: Option<u32>) -> Option<Cow<[u8]>> {
+		result_from_vec(
+			self.backend
+				.storage(key)
+				.expect("Backed failed for storage in ReadOnlyExternalities"),
+			start,
+			limit,
+		)
+	}
+
+	fn exists_storage(&mut self, key: &[u8]) -> bool {
 		self.backend
-			.storage(key)
+			.exists_storage(key)
 			.expect("Backed failed for storage in ReadOnlyExternalities")
 	}
 
-	fn storage_hash(&self, key: &[u8]) -> Option<Vec<u8>> {
+	fn storage_hash(&mut self, key: &[u8]) -> Option<Vec<u8>> {
 		self.backend
 			.storage_hash(key)
 			.expect("Backed failed for storage_hash in ReadOnlyExternalities")
 			.map(|h| h.encode())
 	}
 
-	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<StorageValue> {
+	fn child_storage(
+		&mut self,
+		child_info: &ChildInfo,
+		key: &[u8],
+		start: u32,
+		limit: Option<u32>,
+	) -> Option<Cow<[u8]>> {
+		result_from_vec(
+			self.backend
+				.child_storage(child_info, key)
+				.expect("Backed failed for child_storage in ReadOnlyExternalities"),
+			start,
+			limit,
+		)
+	}
+
+	fn child_storage_len(&mut self, child_info: &ChildInfo, key: &[u8]) -> Option<u32> {
 		self.backend
 			.child_storage(child_info, key)
 			.expect("Backed failed for child_storage in ReadOnlyExternalities")
+			.map(|v| v.len() as u32)
 	}
 
-	fn child_storage_hash(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>> {
+	fn exists_child_storage(&mut self, child_info: &ChildInfo, key: &[u8]) -> bool {
+		self.backend
+			.exists_child_storage(child_info, key)
+			.expect("Backed failed for storage in ReadOnlyExternalities")
+	}
+
+	fn child_storage_hash(&mut self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>> {
 		self.backend
 			.child_storage_hash(child_info, key)
 			.expect("Backed failed for child_storage_hash in ReadOnlyExternalities")
 			.map(|h| h.encode())
 	}
 
-	fn next_storage_key(&self, key: &[u8]) -> Option<StorageKey> {
+	fn next_storage_key(&mut self, key: &[u8]) -> Option<StorageKey> {
 		self.backend
 			.next_storage_key(key)
 			.expect("Backed failed for next_storage_key in ReadOnlyExternalities")
 	}
 
-	fn next_child_storage_key(&self, child_info: &ChildInfo, key: &[u8]) -> Option<StorageKey> {
-		self.backend
-			.next_child_storage_key(child_info, key)
-			.expect("Backed failed for next_child_storage_key in ReadOnlyExternalities")
+	fn next_child_storage_key(
+		&mut self,
+		child_info: &ChildInfo,
+		key: &[u8],
+		count: u32,
+	) -> Option<Vec<StorageKey>> {
+		let mut result = Vec::with_capacity(count as usize);
+		while result.len() < count as usize {
+			match self
+				.backend
+				.next_child_storage_key(child_info, key)
+				.expect("Backed failed for next_child_storage_key in ReadOnlyExternalities")
+			{
+				Some(value) => result.push(value),
+				None => break,
+			}
+		}
+
+		Some(result)
 	}
 
 	fn place_storage(&mut self, _key: StorageKey, _maybe_value: Option<StorageValue>) {
@@ -133,9 +183,9 @@ where
 	fn place_child_storage(
 		&mut self,
 		_child_info: &ChildInfo,
-		_key: StorageKey,
-		_value: Option<StorageValue>,
-	) {
+		_key: &[u8],
+		_value: Option<&[u8]>,
+	) -> bool {
 		unimplemented!("place_child_storage not supported in ReadOnlyExternalities")
 	}
 
@@ -179,7 +229,7 @@ where
 		&mut self,
 		_child_info: &ChildInfo,
 		_state_version: StateVersion,
-	) -> Vec<u8> {
+	) -> Option<Vec<u8>> {
 		unimplemented!("child_storage_root is not supported in ReadOnlyExternalities")
 	}
 
@@ -217,6 +267,90 @@ where
 
 	fn get_read_and_written_keys(&self) -> Vec<(Vec<u8>, u32, u32, bool)> {
 		unimplemented!("get_read_and_written_keys is not supported in ReadOnlyExternalities")
+	}
+
+	fn storage_exists(&mut self, info: &ChildInfo) -> bool {
+		match info.child_type() {
+			// default child storage are viewed as always existing
+			// with empty root.
+			ChildType::Default => true,
+			ChildType::OrderedMap | ChildType::Blob => false,
+		}
+	}
+
+	fn update_storage_info(&mut self, _info: ChildInfo, _clear_existing: bool) -> bool {
+		unimplemented!("update_storage_info is not supported in ReadOnlyExternalities")
+	}
+
+	fn storage_clone(&mut self, _info: &ChildInfo, _target_name: &[u8]) -> bool {
+		unimplemented!("storage_clone is not supported in ReadOnlyExternalities")
+	}
+
+	fn storage_move(&mut self, _info: &ChildInfo, _target_name: &[u8]) -> bool {
+		unimplemented!("storage_move is not supported in ReadOnlyExternalities")
+	}
+
+	fn map_count(&mut self, _name: &[u8]) -> Option<u32> {
+		// no change set so no transient ordered map
+		None
+	}
+
+	fn map_hash32_item(
+		&mut self,
+		_name: &[u8],
+		_key: &[u8],
+		_algo: Hash32Algorithm,
+	) -> Option<[u8; 32]> {
+		// no change set so no transient ordered map
+		None
+	}
+
+	fn map_dump(&mut self, _name: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+		// no change set so no transient ordered map
+		None
+	}
+
+	fn map_dump_hashed(
+		&mut self,
+		_name: &[u8],
+		_algorithm: Hash32Algorithm,
+	) -> Option<Vec<([u8; 32], [u8; 32])>> {
+		// no change set so no transient ordered map
+		None
+	}
+
+	fn blob_len(&mut self, _name: &[u8]) -> Option<u32> {
+		// no change set so no transient blob
+		None
+	}
+
+	fn blob_hash32(&mut self, _name: &[u8], _algo: Hash32Algorithm) -> Option<[u8; 32]> {
+		// no change set so no transient blob
+		None
+	}
+
+	fn blob_set(&mut self, _name: &[u8], _value: &[u8], _offset: u32) -> bool {
+		false
+	}
+
+	fn blob_truncate(&mut self, _name: &[u8], _new_size: u32) -> bool {
+		false
+	}
+
+	fn get_hasher(&mut self, _algorithm: Hash32Algorithm) -> Option<HasherHandle> {
+		unimplemented!("get_hasher is not supported in ReadOnlyExternalities")
+	}
+
+	fn drop_hasher(&mut self, _hasher: Option<HasherHandle>) {
+		unimplemented!("drop_hasher is not supported in ReadOnlyExternalities")
+	}
+
+	fn hasher_update(&mut self, _hasher: HasherHandle, _data: &[u8]) -> bool {
+		unimplemented!("hasher_update is not supported in ReadOnlyExternalities")
+	}
+
+	fn hasher_finalize(&mut self, _hasher: HasherHandle) -> Option<[u8; 32]> {
+		unimplemented!("hasher_finalize is not supported in ReadOnlyExternalities")
 	}
 }
 

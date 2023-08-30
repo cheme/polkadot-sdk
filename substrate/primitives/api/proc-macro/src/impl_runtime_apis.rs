@@ -268,7 +268,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 			pub struct RuntimeApiImpl<Block: #crate_::BlockT, C: #crate_::CallApiAt<Block> + 'static> {
 				call: &'static C,
 				transaction_depth: std::cell::RefCell<u16>,
-				changes: std::cell::RefCell<#crate_::OverlayedChanges<#crate_::HashingFor<Block>>>,
+				changes: std::cell::RefCell<#crate_::Changes<#crate_::HashingFor<Block>>>,
 				recorder: std::option::Option<#crate_::ProofRecorder<Block>>,
 				call_context: #crate_::CallContext,
 				extensions: std::cell::RefCell<#crate_::Extensions>,
@@ -290,9 +290,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 						.checked_sub(1)
 						.expect("Transactions are opened and closed together; qed");
 
-					self.commit_or_rollback_transaction(
-						std::matches!(res, #crate_::TransactionOutcome::Commit(_))
-					);
+					self.commit_or_rollback_transaction(std::matches!(res, #crate_::TransactionOutcome::Commit(_)));
 
 					res.into_inner()
 				}
@@ -351,8 +349,8 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 							.map(|v| #crate_::RuntimeVersion::state_version(&v))
 							.map_err(|e| format!("Failed to get state version: {}", e))?;
 
-						#crate_::OverlayedChanges::drain_storage_changes(
-							&mut std::cell::RefCell::borrow_mut(&self.changes),
+						#crate_::Changes::into_storage_changes(
+							std::cell::RefCell::take(&self.changes),
 							backend,
 							state_version,
 						)
@@ -404,7 +402,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 							Ok(())
 						};
 
-						let res2 = #crate_::OverlayedChanges::commit_transaction(
+						let res2 = #crate_::Changes::commit_transaction(
 							&mut std::cell::RefCell::borrow_mut(&self.changes)
 						);
 
@@ -418,7 +416,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 							Ok(())
 						};
 
-						let res2 = #crate_::OverlayedChanges::rollback_transaction(
+						let res2 = #crate_::Changes::rollback_transaction(
 							&mut std::cell::RefCell::borrow_mut(&self.changes)
 						);
 
@@ -431,7 +429,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				}
 
 				fn start_transaction(&self) {
-					#crate_::OverlayedChanges::start_transaction(
+					#crate_::Changes::start_transaction(
 						&mut std::cell::RefCell::borrow_mut(&self.changes)
 					);
 					if let Some(recorder) = &self.recorder {

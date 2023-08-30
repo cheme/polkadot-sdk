@@ -33,11 +33,9 @@ use sp_std::{
 };
 
 /// Storage key.
-#[derive(PartialEq, Eq, RuntimeDebug)]
-#[cfg_attr(
-	feature = "serde",
-	derive(Serialize, Deserialize, Hash, PartialOrd, Ord, Clone, Encode, Decode)
-)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Encode, Decode, RuntimeDebug)]
+#[cfg_attr(feature = "std", derive(Hash))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct StorageKey(
 	#[cfg_attr(feature = "serde", serde(with = "impl_serde::serialize"))] pub Vec<u8>,
 );
@@ -58,6 +56,11 @@ pub struct TrackedStorageKey {
 	pub writes: u32,
 	pub whitelisted: bool,
 }
+
+/// Blob are using internally for tracking changes 256 byte entry.
+/// Any change will have an allocation cost of 256 bytes.
+/// TODO discuss a good value for it. TODO multiple?
+pub const BLOB_CHUNK_SIZE: usize = 256;
 
 impl TrackedStorageKey {
 	/// Create a default `TrackedStorageKey`
@@ -99,8 +102,9 @@ impl From<Vec<u8>> for TrackedStorageKey {
 }
 
 /// Storage key of a child trie, it contains the prefix to the key.
-#[derive(PartialEq, Eq, RuntimeDebug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize, Hash, PartialOrd, Ord, Clone))]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, RuntimeDebug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "std", derive(Hash))]
 #[repr(transparent)]
 #[derive(RefCast)]
 pub struct PrefixedStorageKey(
@@ -140,11 +144,9 @@ impl PrefixedStorageKey {
 }
 
 /// Storage data associated to a [`StorageKey`].
-#[derive(PartialEq, Eq, RuntimeDebug)]
-#[cfg_attr(
-	feature = "serde",
-	derive(Serialize, Deserialize, Hash, PartialOrd, Ord, Clone, Encode, Decode, Default)
-)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Encode, Decode, Default, RuntimeDebug)]
+#[cfg_attr(feature = "std", derive(Hash))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct StorageData(
 	#[cfg_attr(feature = "serde", serde(with = "impl_serde::serialize"))] pub Vec<u8>,
 );
@@ -154,15 +156,14 @@ pub struct StorageData(
 #[cfg(feature = "std")]
 pub type StorageMap = std::collections::BTreeMap<Vec<u8>, Vec<u8>>;
 
-/// Child trie storage data.
+/// Default child trie storage data.
 #[cfg(feature = "std")]
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct StorageChild {
+pub struct StorageDefaultChild {
 	/// Child data for storage.
 	pub data: StorageMap,
-	/// Associated child info for a child
-	/// trie.
-	pub child_info: ChildInfo,
+	/// Associated default child trie info.
+	pub info: DefaultChild,
 }
 
 /// Struct containing data needed for a storage.
@@ -172,13 +173,45 @@ pub struct Storage {
 	/// Top trie storage data.
 	pub top: StorageMap,
 	/// Children trie storage data. Key does not include prefix, only for the `default` trie kind,
-	/// of `ChildType::ParentKeyId` type.
-	pub children_default: std::collections::HashMap<Vec<u8>, StorageChild>,
+	/// of `ChildType::Default` type.
+	pub children_default: std::collections::HashMap<Vec<u8>, StorageDefaultChild>,
+	/// Changes for ordered map storages.
+	pub ordered_map_storages: std::collections::HashMap<Name, StorageOrderedMap>,
+	/// Changes for blobs.
+	pub blob_storages: std::collections::HashMap<Name, StorageBlob>,
+}
+
+/// Blob storage data.
+#[cfg(feature = "std")]
+#[derive(Debug, PartialEq, Eq, Clone, Encode, Decode)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct StorageBlob {
+	/// Full blob representation.
+	pub data: Vec<u8>,
+	/// Associated info.
+	pub info: Blob,
+	/// Last calculated encoded hash matching
+	/// info hash.
+	pub hash: Option<Vec<u8>>,
+}
+
+/// Ordered map storage data.
+#[cfg(feature = "std")]
+#[derive(Debug, PartialEq, Eq, Clone, Encode, Decode)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct StorageOrderedMap {
+	/// Ordered key value data for storage.
+	pub data: StorageMap,
+	/// Associated info.
+	pub info: OrderedMap,
+	/// Last calculated encoded root matching
+	/// info algorithm.
+	pub root: Option<Vec<u8>>,
 }
 
 /// Storage change set
-#[derive(RuntimeDebug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize, PartialEq, Eq))]
+#[derive(RuntimeDebug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct StorageChangeSet<Hash> {
 	/// Block hash
@@ -215,6 +248,14 @@ pub mod well_known_keys {
 	/// Prefix of the default child storage keys in the top trie.
 	pub const DEFAULT_CHILD_STORAGE_KEY_PREFIX: &[u8] = b":child_storage:default:";
 
+	/// Prefix of the ordered storage keys in the top trie.
+	/// This is currently unused and just a reserved value in case
+	/// non ordered storage support persisted state in the future.
+	pub const ORDERED_MAP_STORAGE_KEY_PREFIX: &'static [u8] = b":child_storage:ordmap:";
+
+	/// Prefix of the sized value child storage keys in the top trie.
+	pub const BLOB_STORAGE_KEY_PREFIX: &'static [u8] = b":child_storage:blob:";
+
 	/// Whether a key is a default child storage key.
 	///
 	/// This is convenience function which basically checks if the given `key` starts
@@ -245,33 +286,66 @@ pub mod well_known_keys {
 /// Threshold size to start using trie value nodes in state.
 pub const TRIE_VALUE_NODE_THRESHOLD: u32 = 33;
 
+/// Transient storage name.
+pub type Name = Vec<u8>;
+
 /// Information related to a child state.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode))]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Encode, Decode)]
+#[cfg_attr(feature = "std", derive(Hash))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ChildInfo {
 	/// This is the one used by default.
-	ParentKeyId(ChildTrieParentKeyId),
+	Default(DefaultChild),
+	/// Ordered map storage info.
+	OrderedMap(OrderedMap),
+	/// Blob storage.
+	Blob(Blob),
 }
 
 impl ChildInfo {
+	/// Child info for a ordered map storage.
+	pub fn new_ordered_map(
+		name: &[u8],
+		mode: Option<transient::Mode>,
+		algorithm: Option<transient::Root32Structure>,
+	) -> Self {
+		ChildInfo::OrderedMap(TransientInfo { name: name.to_vec(), mode, algorithm })
+	}
+
 	/// Instantiates child information for a default child trie
-	/// of kind `ChildType::ParentKeyId`, using an unprefixed parent
+	/// of kind `ChildType::Default`, using an unprefixed parent
 	/// storage key.
 	pub fn new_default(storage_key: &[u8]) -> Self {
-		let data = storage_key.to_vec();
-		ChildInfo::ParentKeyId(ChildTrieParentKeyId { data })
+		let name = storage_key.to_vec();
+		ChildInfo::Default(DefaultChild { name })
 	}
 
 	/// Same as `new_default` but with `Vec<u8>` as input.
 	pub fn new_default_from_vec(storage_key: Vec<u8>) -> Self {
-		ChildInfo::ParentKeyId(ChildTrieParentKeyId { data: storage_key })
+		ChildInfo::Default(DefaultChild { name: storage_key })
+	}
+
+	/// Instantiates child information for a storage
+	/// of kind `ChildType::Blob`, using an unprefixed parent
+	/// storage key.
+	pub fn new_blob(
+		name: &[u8],
+		mode: Option<transient::Mode>,
+		algorithm: Option<transient::Hash32Algorithm>,
+	) -> Self {
+		ChildInfo::Blob(TransientInfo { name: name.to_vec(), mode, algorithm })
 	}
 
 	/// Try to update with another instance, return false if both instance
 	/// are not compatible.
 	pub fn try_update(&mut self, other: &ChildInfo) -> bool {
-		match self {
-			ChildInfo::ParentKeyId(child_trie) => child_trie.try_update(other),
+		match (self, other) {
+			(ChildInfo::Default(child_trie), ChildInfo::Default(other)) =>
+				child_trie.try_update(other),
+			(ChildInfo::Blob(blob), ChildInfo::Blob(other)) => blob.try_update(other),
+			(ChildInfo::OrderedMap(ordmap), ChildInfo::OrderedMap(other)) =>
+				ordmap.try_update(other),
+			_ => false,
 		}
 	}
 
@@ -281,7 +355,9 @@ impl ChildInfo {
 	#[inline]
 	pub fn keyspace(&self) -> &[u8] {
 		match self {
-			ChildInfo::ParentKeyId(..) => self.storage_key(),
+			ChildInfo::Default(..) => self.storage_key(),
+			ChildInfo::OrderedMap(..) => self.storage_key(),
+			ChildInfo::Blob(..) => self.storage_key(),
 		}
 	}
 
@@ -290,7 +366,9 @@ impl ChildInfo {
 	/// child trie.
 	pub fn storage_key(&self) -> &[u8] {
 		match self {
-			ChildInfo::ParentKeyId(ChildTrieParentKeyId { data }) => &data[..],
+			ChildInfo::Default(DefaultChild { name }) => &name[..],
+			ChildInfo::OrderedMap(ordmap) => &ordmap.name[..],
+			ChildInfo::Blob(blob) => &blob.name[..],
 		}
 	}
 
@@ -298,8 +376,11 @@ impl ChildInfo {
 	/// this trie.
 	pub fn prefixed_storage_key(&self) -> PrefixedStorageKey {
 		match self {
-			ChildInfo::ParentKeyId(ChildTrieParentKeyId { data }) =>
-				ChildType::ParentKeyId.new_prefixed_key(data.as_slice()),
+			ChildInfo::Default(DefaultChild { name }) =>
+				ChildType::Default.new_prefixed_key(name.as_slice()),
+			ChildInfo::OrderedMap(ordmap) =>
+				ChildType::OrderedMap.new_prefixed_key(ordmap.name.as_slice()),
+			ChildInfo::Blob(blob) => ChildType::Blob.new_prefixed_key(blob.name.as_slice()),
 		}
 	}
 
@@ -307,9 +388,17 @@ impl ChildInfo {
 	/// this trie.
 	pub fn into_prefixed_storage_key(self) -> PrefixedStorageKey {
 		match self {
-			ChildInfo::ParentKeyId(ChildTrieParentKeyId { mut data }) => {
-				ChildType::ParentKeyId.do_prefix_key(&mut data);
-				PrefixedStorageKey(data)
+			ChildInfo::Default(DefaultChild { mut name }) => {
+				ChildType::Default.do_prefix_key(&mut name);
+				PrefixedStorageKey(name)
+			},
+			ChildInfo::OrderedMap(mut ordmap) => {
+				ChildType::OrderedMap.do_prefix_key(&mut ordmap.name);
+				PrefixedStorageKey(ordmap.name)
+			},
+			ChildInfo::Blob(mut blob) => {
+				ChildType::Blob.do_prefix_key(&mut blob.name);
+				PrefixedStorageKey(blob.name)
 			},
 		}
 	}
@@ -317,7 +406,9 @@ impl ChildInfo {
 	/// Returns the type for this child info.
 	pub fn child_type(&self) -> ChildType {
 		match self {
-			ChildInfo::ParentKeyId(..) => ChildType::ParentKeyId,
+			ChildInfo::Default(..) => ChildType::Default,
+			ChildInfo::OrderedMap(..) => ChildType::OrderedMap,
+			ChildInfo::Blob(..) => ChildType::Blob,
 		}
 	}
 }
@@ -331,14 +422,128 @@ impl ChildInfo {
 pub enum ChildType {
 	/// If runtime module ensures that the child key is a unique id that will
 	/// only be used once, its parent key is used as a child trie unique id.
-	ParentKeyId = 1,
+	/// Child state is automatically attached to the parent state on parent
+	/// root calculation.
+	Default = 1,
+	/// Ordered key value child state.
+	///
+	/// Run as a transient storage: it's state will not be accessible between
+	/// blocks.
+	///
+	/// Storage of it's content is client specific but a `transient::Mode` hint can be set.
+	///
+	/// An unused prefix `BTREE_STORAGE_KEY_PREFIX` is reserved.
+	OrderedMap = 2,
+	/// Transient byte array of content.
+	///
+	/// An unused prefix `BLOB_STORAGE_KEY_PREFIX` is reserved.
+	Blob = 3,
+}
+
+/// Transient storage specific structure and data.
+/// Transient storage are storage that do not persist
+/// their state between blocks.
+/// TODO rename this module and maybe in its own file
+pub mod transient {
+	use codec::{Decode, Encode};
+
+	#[cfg(feature = "serde")]
+	use serde::{Deserialize, Serialize};
+
+	/// `Mode` define if transient storage should keep
+	/// storage accessible.
+	/// Accessible storage may be pruned as any storage.
+	#[derive(PartialEq, Eq, Debug, Clone, Copy, PartialOrd, Ord, Encode, Decode)]
+	#[cfg_attr(feature = "std", derive(Hash))]
+	#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+	pub enum Mode {
+		/// Storage can be drop.
+		/// Information will remain local to the runtime
+		/// processing (no external indexing, no notification).
+		#[cfg_attr(feature = "std", codec(index = 0))]
+		Drop,
+		/// Storage should be accessible.
+		/// Information would be expose to client indexing
+		/// and storage change notifications.
+		#[cfg_attr(feature = "std", codec(index = 1))]
+		Archive,
+	}
+
+	/// Hashing algorithm for transient blob.
+	///
+	/// Warning any update to this enum means updating
+	/// (new version needed) all host functions using it as a parameter.
+	#[derive(PartialEq, Eq, Debug, Clone, Copy, PartialOrd, Ord, Encode, Decode)]
+	#[cfg_attr(feature = "std", derive(Hash))]
+	#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+	pub enum Hash32Algorithm {
+		/// Storage can be drop.
+		#[cfg_attr(feature = "std", codec(index = 0))]
+		Blake2b256,
+		// TODO all different runtime hash variants??
+		/* TODO +proof from rpc		/// Storage should be accessible.
+				#[codec(index = 1)]
+				Blake3,
+		*/
+	}
+
+	/// Hashing algorithm for transient blob.
+	///
+	/// Warning any update to this enum means updating
+	/// (new version needed) all host functions using it as a parameter.
+	#[derive(PartialEq, Eq, Debug, Clone, Copy, PartialOrd, Ord, Encode, Decode)]
+	#[cfg_attr(feature = "std", derive(Hash))]
+	#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+	pub enum Root32Structure {
+		/// Substrate default.
+		/// The patricia base 16 merkle trie with
+		/// state version 1 encoding and same hashing method as state.
+		#[cfg_attr(feature = "std", codec(index = 0))]
+		SubstrateDefault,
+		// TODO some binary trie one(s)
+	}
+
+	/// Opaque wrapper around a host allocated hasher state.
+	/// `Encode` and `Decode` are here for technical reason only.
+	#[derive(PartialEq, Eq, Clone, Copy, Encode, Decode)]
+	#[repr(transparent)]
+	pub struct HasherHandle(u32);
+
+	/// Trait describing an object that can hash with multiple hash_db hashers
+	/// given a 32 bytes output.
+	///
+	/// The `Hasher` implementation is the default one for state.
+	///
+	/// TODO maybe rename as it is the main entry point for io calls
+	/// from state machine and could extend to more things.
+	/// It actually got not much to do with hasher, but this makes
+	/// refactoring faster (it could be another trait).
+	pub trait Hashers: hash_db::Hasher {
+		/// Indicate if we the hasher uses host functions.
+		const IS_USING_HOST: bool;
+
+		/// Compute the hash of the provided slice of bytes returning the calculated hash.
+		fn hash_with(data: &[u8], algo: Hash32Algorithm) -> [u8; 32];
+		/// Get hasher.
+		fn hash_state_with(algo: Hash32Algorithm) -> Option<HasherHandle>;
+		/// Advance hashing with more bytes.
+		/// Return true on success, false on failure.
+		fn hash_update(state: HasherHandle, data: &[u8]) -> bool;
+		/// Remove hasher state explicitely.
+		/// When using `None` remove all know hasher constext (only make
+		/// sense in the context of calling host function through this api).
+		fn hash_drop(state: Option<HasherHandle>);
+		/// Finish hashing and get hash.
+		/// Return None on failure.
+		fn hash_finalize(state: HasherHandle) -> Option<[u8; 32]>;
+	}
 }
 
 impl ChildType {
 	/// Try to get a child type from its `u32` representation.
 	pub fn new(repr: u32) -> Option<ChildType> {
 		Some(match repr {
-			r if r == ChildType::ParentKeyId as u32 => ChildType::ParentKeyId,
+			r if r == ChildType::Default as u32 => ChildType::Default,
 			_ => return None,
 		})
 	}
@@ -354,11 +559,13 @@ impl ChildType {
 				None
 			}
 		};
-		match_type(storage_key, ChildType::ParentKeyId)
+		match_type(storage_key, ChildType::Default)
+			.or_else(|| match_type(storage_key, ChildType::OrderedMap))
+			.or_else(|| match_type(storage_key, ChildType::Blob))
 	}
 
 	/// Produce a prefixed key for a given child type.
-	fn new_prefixed_key(&self, key: &[u8]) -> PrefixedStorageKey {
+	pub fn new_prefixed_key(&self, key: &[u8]) -> PrefixedStorageKey {
 		let parent_prefix = self.parent_prefix();
 		let mut result = Vec::with_capacity(parent_prefix.len() + key.len());
 		result.extend_from_slice(parent_prefix);
@@ -381,7 +588,9 @@ impl ChildType {
 	/// is one.
 	pub fn parent_prefix(&self) -> &'static [u8] {
 		match self {
-			&ChildType::ParentKeyId => well_known_keys::DEFAULT_CHILD_STORAGE_KEY_PREFIX,
+			&ChildType::Default => well_known_keys::DEFAULT_CHILD_STORAGE_KEY_PREFIX,
+			&ChildType::OrderedMap => well_known_keys::ORDERED_MAP_STORAGE_KEY_PREFIX,
+			&ChildType::Blob => well_known_keys::BLOB_STORAGE_KEY_PREFIX,
 		}
 	}
 }
@@ -393,20 +602,74 @@ impl ChildType {
 /// It shares its trie nodes backend storage with every other child trie, so its storage key needs
 /// to be a unique id that will be use only once. Those unique id also required to be long enough to
 /// avoid any unique id to be prefixed by an other unique id.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode))]
-pub struct ChildTrieParentKeyId {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Encode, Decode)]
+#[cfg_attr(feature = "std", derive(Hash))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DefaultChild {
 	/// Data is the storage key without prefix.
-	data: Vec<u8>,
+	pub name: Name,
 }
 
-impl ChildTrieParentKeyId {
+impl DefaultChild {
+	/// Instantiate with name
+	pub fn new(name: impl AsRef<[u8]>) -> Self {
+		DefaultChild { name: name.as_ref().into() }
+	}
+
 	/// Try to update with another instance, return false if both instance
 	/// are not compatible.
-	fn try_update(&mut self, other: &ChildInfo) -> bool {
-		match other {
-			ChildInfo::ParentKeyId(other) => self.data[..] == other.data[..],
-		}
+	pub fn try_update(&mut self, other: &Self) -> bool {
+		self.name[..] == other.name[..]
+	}
+}
+
+/// Transient defining infos.
+#[derive(Debug, Clone, PartialEq, Eq, Ord, Encode, Decode)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TransientInfo<A> {
+	/// Name of the transient storage.
+	pub name: Name,
+
+	/// Storage mode. This must be defined when
+	/// initializing a storage, could be omitted aferward.
+	pub mode: Option<transient::Mode>,
+
+	/// Structure to apply for root.
+	pub algorithm: Option<A>,
+}
+
+/// Ordered map defining infos.
+pub type OrderedMap = TransientInfo<transient::Root32Structure>;
+
+/// Blob defining infos.
+pub type Blob = TransientInfo<transient::Hash32Algorithm>;
+
+#[cfg(feature = "std")]
+impl<A> sp_std::hash::Hash for TransientInfo<A> {
+	fn hash<H>(&self, state: &mut H)
+	where
+		H: sp_std::hash::Hasher,
+	{
+		self.name.hash(state)
+	}
+}
+
+impl<A: PartialEq> PartialOrd for TransientInfo<A> {
+	fn partial_cmp(&self, other: &Self) -> Option<sp_std::cmp::Ordering> {
+		self.name.partial_cmp(&other.name)
+	}
+}
+
+impl<A: Clone> TransientInfo<A> {
+	/// Try to update with another instance, return false if both instance
+	/// are not compatible.
+	pub fn try_update(&mut self, other: &Self) -> bool {
+		let Self { name, mode, algorithm } = self;
+
+		let Self { name: o_name, mode: o_mode, algorithm: o_algorithm } = other;
+		// hash/root method can differ (changing to change next call to storage root).
+		*algorithm = o_algorithm.clone();
+		name == o_name && if o_mode.is_some() { mode == o_mode } else { true }
 	}
 }
 

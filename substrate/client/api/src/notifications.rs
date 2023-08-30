@@ -55,8 +55,12 @@ pub struct StorageNotification<Hash> {
 pub struct StorageChangeSet {
 	changes: Arc<[(StorageKey, Option<StorageData>)]>,
 	child_changes: Arc<[(StorageKey, Vec<(StorageKey, Option<StorageData>)>)]>,
+	blobs_changes: Arc<[(StorageKey, Option<StorageData>)]>,
+	btrees_changes: Arc<[(StorageKey, Option<Vec<(StorageKey, Option<StorageData>)>>)]>,
 	filter: Keys,
 	child_filters: ChildKeys,
+	blobs_filters: Keys,
+	btrees_filters: ChildKeys,
 }
 
 /// Manages storage listeners.
@@ -73,7 +77,11 @@ impl StorageChangeSet {
 	/// Convert the change set into iterator over storage items.
 	pub fn iter(
 		&self,
-	) -> impl Iterator<Item = (Option<&StorageKey>, &StorageKey, Option<&StorageData>)> + '_ {
+	) -> (
+		impl Iterator<Item = (Option<&StorageKey>, &StorageKey, Option<&StorageData>)> + '_,
+		impl Iterator<Item = (&StorageKey, Option<(&StorageKey, Option<&StorageData>)>)> + '_,
+		impl Iterator<Item = (&StorageKey, Option<&StorageData>)> + '_,
+	) {
 		let top = self
 			.changes
 			.iter()
@@ -99,7 +107,37 @@ impl StorageChangeSet {
 				})
 			})
 			.flatten();
-		top.chain(children)
+		let btrees = self
+			.btrees_changes
+			.iter()
+			.filter_map(move |(sk, changes)| {
+				let Some(changes) = changes else {
+					// TODO notif for removal and add
+					return None
+				};
+				self.btrees_filters.as_ref().and_then(|cf| {
+					cf.get(sk).map(|filter| {
+						changes
+							.iter()
+							.filter(move |&(key, _)| match filter {
+								Some(ref filter) => filter.contains(key),
+								None => true,
+							})
+							.map(move |(k, v)| (sk, Some((k, v.as_ref()))))
+					})
+				})
+			})
+			.flatten();
+		let blobs = self
+			.blobs_changes
+			.iter()
+			.filter(move |&(key, _)| match self.blobs_filters {
+				Some(ref filter) => filter.contains(key),
+				None => true,
+			})
+			.map(move |(k, v)| (k, v.as_ref()));
+
+		(top.chain(children), btrees, blobs)
 	}
 }
 
@@ -134,8 +172,13 @@ impl<Block: BlockT> StorageNotifications<Block> {
 		child_changeset: impl Iterator<
 			Item = (Vec<u8>, impl Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>),
 		>,
+		btrees_changeset: impl Iterator<
+			Item = (Vec<u8>, Option<impl Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>),
+		>,
+		blobs_changeset: impl Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>,
 	) {
-		self.0.send((hash, changeset, child_changeset))
+		self.0
+			.send((hash, changeset, child_changeset, btrees_changeset, blobs_changeset))
 	}
 
 	/// Start listening for particular storage keys.
@@ -143,10 +186,18 @@ impl<Block: BlockT> StorageNotifications<Block> {
 		&self,
 		filter_keys: Option<&[StorageKey]>,
 		filter_child_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		filter_btrees_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		filter_blobs_keys: Option<&[StorageKey]>,
 	) -> StorageEventStream<Block::Hash> {
-		let receiver = self
-			.0
-			.subscribe(registry::SubscribeOp { filter_keys, filter_child_keys }, 100_000);
+		let receiver = self.0.subscribe(
+			registry::SubscribeOp {
+				filter_keys,
+				filter_child_keys,
+				filter_btrees_keys,
+				filter_blobs_keys,
+			},
+			100_000,
+		);
 
 		StorageEventStream(receiver)
 	}

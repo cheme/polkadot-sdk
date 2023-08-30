@@ -36,6 +36,8 @@ type SubscribersGauge = CounterVec<U64>;
 pub(super) struct SubscribeOp<'a> {
 	pub filter_keys: Option<&'a [StorageKey]>,
 	pub filter_child_keys: Option<&'a [(StorageKey, Option<Vec<StorageKey>>)]>,
+	pub filter_btrees_keys: Option<&'a [(StorageKey, Option<Vec<StorageKey>>)]>,
+	pub filter_blobs_keys: Option<&'a [StorageKey]>,
 }
 
 #[derive(Debug, Default)]
@@ -47,6 +49,12 @@ pub(super) struct Registry {
 		StorageKey,
 		(HashMap<StorageKey, FnvHashSet<SubscriberId>>, FnvHashSet<SubscriberId>),
 	>,
+	pub(super) btrees_listeners: HashMap<
+		StorageKey,
+		(HashMap<StorageKey, FnvHashSet<SubscriberId>>, FnvHashSet<SubscriberId>),
+	>,
+	pub(super) blobs_listeners: HashMap<StorageKey, FnvHashSet<SubscriberId>>,
+	pub(super) blobs_wildcard_listeners: FnvHashSet<SubscriberId>,
 	pub(super) sinks: FnvHashMap<SubscriberId, SubscriberSink>,
 }
 
@@ -55,6 +63,8 @@ pub(super) struct SubscriberSink {
 	subs_id: SubscriberId,
 	keys: Keys,
 	child_keys: ChildKeys,
+	btrees_keys: ChildKeys,
+	blobs_keys: Keys,
 	was_triggered: bool,
 }
 
@@ -63,18 +73,26 @@ impl Drop for SubscriberSink {
 		if !self.was_triggered {
 			log::trace!(
 				target: "storage_notifications",
-				"Listener was never triggered: id={}, keys={:?}, child_keys={:?}",
+				"Listener was never triggered: id={}, keys={:?}, child_keys={:?}, btrees_keys={:?}, blob_keys={:?}",
 				self.subs_id,
 				PrintKeys(&self.keys),
 				PrintChildKeys(&self.child_keys),
+				PrintChildKeys(&self.btrees_keys),
+				PrintKeys(&self.blobs_keys),
 			);
 		}
 	}
 }
 
 impl SubscriberSink {
-	fn new(subs_id: SubscriberId, keys: Keys, child_keys: ChildKeys) -> Self {
-		Self { subs_id, keys, child_keys, was_triggered: false }
+	fn new(
+		subs_id: SubscriberId,
+		keys: Keys,
+		child_keys: ChildKeys,
+		btrees_keys: ChildKeys,
+		blobs_keys: Keys,
+	) -> Self {
+		Self { subs_id, keys, child_keys, btrees_keys, blobs_keys, was_triggered: false }
 	}
 }
 
@@ -104,7 +122,8 @@ impl Unsubscribe for Registry {
 
 impl<'a> Subscribe<SubscribeOp<'a>> for Registry {
 	fn subscribe(&mut self, subs_op: SubscribeOp<'a>, subs_id: SubscriberId) {
-		let SubscribeOp { filter_keys, filter_child_keys } = subs_op;
+		let SubscribeOp { filter_keys, filter_child_keys, filter_btrees_keys, filter_blobs_keys } =
+			subs_op;
 
 		let keys = Self::listen_from(
 			subs_id,
@@ -133,13 +152,43 @@ impl<'a> Subscribe<SubscribeOp<'a>> for Registry {
 				.collect()
 		});
 
+		let btrees_keys = filter_btrees_keys.map(|filter_btrees_keys| {
+			filter_btrees_keys
+				.iter()
+				.map(|(c_key, o_keys)| {
+					let (c_listeners, c_wildcards) =
+						self.btrees_listeners.entry(c_key.clone()).or_default();
+
+					(
+						c_key.clone(),
+						Self::listen_from(
+							subs_id,
+							o_keys.as_ref(),
+							&mut *c_listeners,
+							&mut *c_wildcards,
+						),
+					)
+				})
+				.collect()
+		});
+
+		let blobs_keys = Self::listen_from(
+			subs_id,
+			filter_blobs_keys.as_ref(),
+			&mut self.blobs_listeners,
+			&mut self.blobs_wildcard_listeners,
+		);
+
 		if let Some(m) = self.metrics.as_ref() {
 			m.with_label_values(&["added"]).inc();
 		}
 
 		if self
 			.sinks
-			.insert(subs_id, SubscriberSink::new(subs_id, keys, child_keys))
+			.insert(
+				subs_id,
+				SubscriberSink::new(subs_id, keys, child_keys, btrees_keys, blobs_keys),
+			)
 			.is_some()
 		{
 			log::warn!("The `subscribe`-method has been passed a non-unique subs_id (in `sc-client-api::notifications`)");
@@ -147,22 +196,25 @@ impl<'a> Subscribe<SubscribeOp<'a>> for Registry {
 	}
 }
 
-impl<'a, Hash, CS, CCS, CCSI> Dispatch<(&'a Hash, CS, CCS)> for Registry
+impl<'a, Hash, CS, CCS, BTS, BLS, CCSI, CCSI2> Dispatch<(&'a Hash, CS, CCS, BTS, BLS)> for Registry
 where
 	Hash: Clone,
 	CS: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>,
+	BLS: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>,
 	CCS: Iterator<Item = (Vec<u8>, CCSI)>,
+	BTS: Iterator<Item = (Vec<u8>, Option<CCSI2>)>,
 	CCSI: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>,
+	CCSI2: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>,
 {
 	type Item = StorageNotification<Hash>;
 	type Ret = ();
 
-	fn dispatch<F>(&mut self, message: (&'a Hash, CS, CCS), dispatch: F) -> Self::Ret
+	fn dispatch<F>(&mut self, message: (&'a Hash, CS, CCS, BTS, BLS), dispatch: F) -> Self::Ret
 	where
 		F: FnMut(&SubscriberId, Self::Item),
 	{
-		let (hash, changeset, child_changeset) = message;
-		self.trigger(hash, changeset, child_changeset, dispatch);
+		let (hash, changeset, child_changeset, btrees_changeset, blobs_changeset) = message;
+		self.trigger(hash, changeset, child_changeset, btrees_changeset, blobs_changeset, dispatch);
 	}
 }
 
@@ -174,6 +226,10 @@ impl Registry {
 		child_changeset: impl Iterator<
 			Item = (Vec<u8>, impl Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>),
 		>,
+		btrees_changeset: impl Iterator<
+			Item = (Vec<u8>, Option<impl Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>),
+		>,
+		blobs_changeset: impl Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>,
 		mut dispatch: F,
 	) where
 		Hash: Clone,
@@ -189,6 +245,8 @@ impl Registry {
 		let mut subscribers = self.wildcard_listeners.clone();
 		let mut changes = Vec::new();
 		let mut child_changes = Vec::new();
+		let mut btrees_changes = Vec::new();
+		let mut blobs_changes = Vec::new();
 
 		// Collect subscribers and changes
 		for (k, v) in changeset {
@@ -203,6 +261,19 @@ impl Registry {
 				changes.push((k, v.map(StorageData)));
 			}
 		}
+		for (k, v) in blobs_changeset {
+			let k = StorageKey(k);
+			let listeners = self.blobs_listeners.get(&k);
+
+			if let Some(listeners) = listeners {
+				subscribers.extend(listeners.iter());
+			}
+
+			if has_wildcard || listeners.is_some() {
+				blobs_changes.push((k, v.map(StorageData)));
+			}
+		}
+
 		for (sk, changeset) in child_changeset {
 			let sk = StorageKey(sk);
 			if let Some((cl, cw)) = self.child_listeners.get(&sk) {
@@ -226,14 +297,45 @@ impl Registry {
 				}
 			}
 		}
+		for (sk, changeset) in btrees_changeset {
+			let sk = StorageKey(sk);
+			if let Some((cl, cw)) = self.btrees_listeners.get(&sk) {
+				if let Some(changeset) = changeset {
+					let mut changes = Vec::new();
+					for (k, v) in changeset {
+						let k = StorageKey(k);
+						let listeners = cl.get(&k);
+
+						if let Some(listeners) = listeners {
+							subscribers.extend(listeners.iter());
+						}
+
+						subscribers.extend(cw.iter());
+
+						if !cw.is_empty() || listeners.is_some() {
+							changes.push((k, v.map(StorageData)));
+						}
+					}
+					btrees_changes.push((sk, Some(changes)));
+				} else {
+					btrees_changes.push((sk, None));
+				}
+			}
+		}
 
 		// Don't send empty notifications
-		if changes.is_empty() && child_changes.is_empty() {
+		if changes.is_empty() &&
+			child_changes.is_empty() &&
+			btrees_changes.is_empty() &&
+			blobs_changes.is_empty()
+		{
 			return
 		}
 
 		let changes = Arc::<[_]>::from(changes);
 		let child_changes = Arc::<[_]>::from(child_changes);
+		let blobs_changes = Arc::<[_]>::from(blobs_changes);
+		let btrees_changes = Arc::<[_]>::from(btrees_changes);
 
 		// Trigger the events
 		self.sinks.iter_mut().for_each(|(subs_id, sink)| {
@@ -243,8 +345,12 @@ impl Registry {
 				let storage_change_set = StorageChangeSet {
 					changes: changes.clone(),
 					child_changes: child_changes.clone(),
+					blobs_changes: blobs_changes.clone(),
+					btrees_changes: btrees_changes.clone(),
 					filter: sink.keys.clone(),
 					child_filters: sink.child_keys.clone(),
+					blobs_filters: sink.blobs_keys.clone(),
+					btrees_filters: sink.btrees_keys.clone(),
 				};
 
 				let notification =

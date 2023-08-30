@@ -45,9 +45,44 @@ pub fn blake2_512(data: &[u8]) -> [u8; 64] {
 	blake2(data)
 }
 
+/// Do a Blake2 256-bit hash and place result in `dest`.
+pub fn blake2_256_into(data: &[u8], dest: &mut [u8; 32]) {
+	*dest = blake2(data);
+}
+
 /// Do a Blake2 256-bit hash and return result.
 pub fn blake2_256(data: &[u8]) -> [u8; 32] {
 	blake2(data)
+}
+
+/// State for precessing blake2b 256 in multiple steps.
+#[derive(Clone)]
+pub struct Blake2b256State(blake2b_simd::State);
+
+impl Blake2b256State {
+	/// Start hashing.
+	pub fn new() -> Self {
+		Blake2b256State(blake2b_simd::Params::new().hash_length(32).to_state())
+	}
+
+	/// Hash more content.
+	pub fn update(&mut self, data: &[u8]) {
+		self.0.update(data);
+	}
+
+	/// Obtain hash.
+	pub fn finalize(self) -> [u8; 32] {
+		self.0
+			.finalize()
+			.as_bytes()
+			.try_into()
+			.expect("slice is always the necessary length")
+	}
+}
+
+/// Do a Blake2 128-bit hash and place result in `dest`.
+pub fn blake2_128_into(data: &[u8], dest: &mut [u8; 16]) {
+	*dest = blake2(data);
 }
 
 /// Do a Blake2 128-bit hash and return result.
