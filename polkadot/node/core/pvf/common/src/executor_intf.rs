@@ -23,10 +23,15 @@ use sc_executor_common::{
 	wasm_runtime::{HeapAllocStrategy, InvokeMethod, WasmModule as _},
 };
 use sc_executor_wasmtime::{Config, DeterministicStackLimit, Semantics, WasmtimeRuntime};
-use sp_core::storage::{ChildInfo, TrackedStorageKey, transient::{HasherHandle, Hash32Algorithm}};
+use sp_core::storage::{
+	transient::{Hash32Algorithm, HasherHandle},
+	ChildInfo, TrackedStorageKey,
+};
 use sp_externalities::MultiRemovalResults;
-use std::any::{Any, TypeId};
-use std::borrow::Cow;
+use std::{
+	any::{Any, TypeId},
+	borrow::Cow,
+};
 
 // Memory configuration
 //
@@ -274,7 +279,11 @@ impl sp_externalities::Externalities for ValidationExternalities {
 		panic!("storage_root: unsupported feature for parachain validation")
 	}
 
-	fn child_storage_root(&mut self, _: &ChildInfo, _: sp_core::storage::StateVersion) -> Option<Vec<u8>> {
+	fn child_storage_root(
+		&mut self,
+		_: &ChildInfo,
+		_: sp_core::storage::StateVersion,
+	) -> Option<Vec<u8>> {
 		panic!("child_storage_root: unsupported feature for parachain validation")
 	}
 
@@ -366,7 +375,6 @@ impl sp_externalities::Externalities for ValidationExternalities {
 	fn blob_len(&mut self, _name: &[u8]) -> Option<u32> {
 		panic!("blob_len: unsupported feature for parachain validation")
 	}
-
 
 	fn map_hash32_item(
 		&mut self,
