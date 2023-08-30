@@ -27,9 +27,12 @@ use polkadot_parachain::primitives::{HeadData, RelayChainBlockNumber, Validation
 use codec::Encode;
 
 use frame_support::traits::{ExecuteBlock, ExtrinsicCall, Get, IsSubType};
-use sp_core::storage::{ChildInfo, StateVersion};
+use sp_core::storage::{
+	transient::{Hash32Algorithm, Mode as TransientMode, Root32Structure},
+	ChildInfo, StateVersion,
+};
 use sp_externalities::{set_and_run_with_externalities, Externalities};
-use sp_io::KillStorageResult;
+use sp_io::{Crossing, KillStorageResult};
 use sp_runtime::traits::{Block as BlockT, Extrinsic, HashingFor, Header as HeaderT};
 use sp_std::prelude::*;
 use sp_trie::MemoryDB;
@@ -165,6 +168,51 @@ where
 			.replace_implementation(host_default_child_storage_next_key),
 		sp_io::offchain_index::host_set.replace_implementation(host_offchain_index_set),
 		sp_io::offchain_index::host_clear.replace_implementation(host_offchain_index_clear),
+		sp_io::blob_storage::host_new.replace_implementation(host_blob_storage_new),
+		sp_io::blob_storage::host_exists.replace_implementation(host_blob_storage_exists),
+		sp_io::blob_storage::host_delete.replace_implementation(host_blob_storage_delete),
+		sp_io::blob_storage::host_clone.replace_implementation(host_blob_storage_clone),
+		sp_io::blob_storage::host_rename.replace_implementation(host_blob_storage_rename),
+		sp_io::blob_storage::host_set.replace_implementation(host_blob_storage_set),
+		sp_io::blob_storage::host_truncate.replace_implementation(host_blob_storage_truncate),
+		sp_io::blob_storage::host_read.replace_implementation(host_blob_storage_read),
+		sp_io::blob_storage::host_get.replace_implementation(host_blob_storage_get),
+		sp_io::blob_storage::host_len.replace_implementation(host_blob_storage_len),
+		sp_io::blob_storage::host_hash32.replace_implementation(host_blob_storage_hash32),
+		sp_io::ordered_map_storage::host_new.replace_implementation(host_ordered_map_storage_new),
+		sp_io::ordered_map_storage::host_exists
+			.replace_implementation(host_ordered_map_storage_exists),
+		sp_io::ordered_map_storage::host_delete
+			.replace_implementation(host_ordered_map_storage_delete),
+		sp_io::ordered_map_storage::host_clone
+			.replace_implementation(host_ordered_map_storage_clone),
+		sp_io::ordered_map_storage::host_rename
+			.replace_implementation(host_ordered_map_storage_rename),
+		sp_io::ordered_map_storage::host_insert_item
+			.replace_implementation(host_ordered_map_storage_insert_item),
+		sp_io::ordered_map_storage::host_remove_item
+			.replace_implementation(host_ordered_map_storage_remove_item),
+		sp_io::ordered_map_storage::host_contains_item
+			.replace_implementation(host_ordered_map_storage_contains_item),
+		sp_io::ordered_map_storage::host_get_item
+			.replace_implementation(host_ordered_map_storage_get_item),
+		sp_io::ordered_map_storage::host_read_item
+			.replace_implementation(host_ordered_map_storage_read_item),
+		sp_io::ordered_map_storage::host_len_item
+			.replace_implementation(host_ordered_map_storage_len_item),
+		sp_io::ordered_map_storage::host_count
+			.replace_implementation(host_ordered_map_storage_count),
+		sp_io::ordered_map_storage::host_hash32_item
+			.replace_implementation(host_ordered_map_storage_hash32_item),
+		sp_io::ordered_map_storage::host_next_keys
+			.replace_implementation(host_ordered_map_storage_next_keys),
+		sp_io::ordered_map_storage::host_root32
+			.replace_implementation(host_ordered_map_storage_root32),
+		// TODO no dump ??
+		sp_io::ordered_map_storage::host_dump.replace_implementation(host_ordered_map_storage_dump),
+		// TODO no dump ??
+		sp_io::ordered_map_storage::host_dump_hashed
+			.replace_implementation(host_ordered_map_storage_dump_hashed),
 	);
 
 	run_with_externalities::<B, _, _>(&backend, || {
@@ -405,6 +453,155 @@ fn host_default_child_storage_next_key(storage_key: &[u8], key: &[u8]) -> Option
 	with_externalities(|ext| {
 		ext.next_child_storage_key(&child_info, key, 1).and_then(|mut keys| keys.pop())
 	})
+}
+
+fn host_blob_storage_new(name: &[u8], mode: Crossing<TransientMode>) {
+	with_externalities(|ext| ext.blob_new(name, mode.into_inner()))
+}
+
+fn host_blob_storage_exists(name: &[u8]) -> bool {
+	with_externalities(|ext| ext.blob_exists(name))
+}
+
+fn host_blob_storage_delete(name: &[u8]) -> bool {
+	with_externalities(|ext| ext.blob_exists(name))
+}
+
+fn host_blob_storage_clone(name: &[u8], target_name: &[u8]) -> bool {
+	with_externalities(|ext| ext.blob_clone(name, target_name))
+}
+
+fn host_blob_storage_rename(name: &[u8], target_name: &[u8]) -> bool {
+	with_externalities(|ext| ext.blob_rename(name, target_name))
+}
+
+fn host_blob_storage_set(name: &[u8], value: &[u8], offset: u32) -> bool {
+	with_externalities(|ext| ext.blob_set(name, value, offset))
+}
+
+fn host_blob_storage_truncate(name: &[u8], new_size: u32) -> bool {
+	with_externalities(|ext| ext.blob_truncate(name, new_size))
+}
+
+fn host_blob_storage_read(name: &[u8], value_out: &mut [u8], value_offset: u32) -> Option<u32> {
+	let len = value_out.len();
+	if len > u32::MAX as usize {
+		return None
+	}
+	with_externalities(|ext| {
+		ext.blob_get(name, Some(len as u32), value_offset).map(|value| {
+			let written = sp_std::cmp::min(value.len(), value_out.len());
+			value_out[..written].copy_from_slice(&value[..written]);
+			written as u32
+		})
+	})
+}
+
+fn host_blob_storage_get(name: &[u8]) -> Option<Vec<u8>> {
+	with_externalities(|ext| ext.blob_get(name, None, 0).map(Into::into))
+}
+
+fn host_blob_storage_len(name: &[u8]) -> Option<u32> {
+	with_externalities(|ext| ext.blob_len(name))
+}
+
+fn host_blob_storage_hash32(name: &[u8], algorithm: Crossing<Hash32Algorithm>) -> Option<[u8; 32]> {
+	with_externalities(|ext| ext.blob_hash32(name, algorithm.into_inner()))
+}
+
+fn host_ordered_map_storage_new(name: &[u8], mode: Crossing<TransientMode>) {
+	with_externalities(|ext| ext.map_new(name, mode.into_inner()))
+}
+
+fn host_ordered_map_storage_exists(name: &[u8]) -> bool {
+	with_externalities(|ext| ext.map_exists(name))
+}
+
+fn host_ordered_map_storage_delete(name: &[u8]) -> bool {
+	with_externalities(|ext| ext.map_delete(name))
+}
+
+fn host_ordered_map_storage_clone(name: &[u8], target_name: &[u8]) -> bool {
+	with_externalities(|ext| ext.map_clone(name, target_name))
+}
+
+fn host_ordered_map_storage_rename(name: &[u8], target_name: &[u8]) -> bool {
+	with_externalities(|ext| ext.map_rename(name, target_name))
+}
+
+fn host_ordered_map_storage_insert_item(name: &[u8], key: &[u8], value: &[u8]) -> bool {
+	with_externalities(|ext| ext.map_insert_item(name, key, value))
+}
+
+fn host_ordered_map_storage_remove_item(name: &[u8], key: &[u8]) -> bool {
+	with_externalities(|ext| ext.map_remove_item(name, key))
+}
+
+fn host_ordered_map_storage_contains_item(name: &[u8], key: &[u8]) -> bool {
+	with_externalities(|ext| ext.map_contains_item(name, key))
+}
+
+fn host_ordered_map_storage_get_item(name: &[u8], key: &[u8]) -> Option<bytes::Bytes> {
+	with_externalities(|ext| {
+		ext.map_get_item(name, key, None, 0).map(|value| value.into_owned().into())
+	})
+}
+
+fn host_ordered_map_storage_read_item(
+	name: &[u8],
+	key: &[u8],
+	value_out: &mut [u8],
+	value_offset: u32,
+) -> Option<u32> {
+	let len = value_out.len();
+	if len > u32::MAX as usize {
+		return None
+	}
+	with_externalities(|ext| {
+		ext.map_get_item(name, key, Some(len as u32), value_offset).map(|value| {
+			let written = sp_std::cmp::min(value.len(), value_out.len());
+			value_out[..written].copy_from_slice(&value[..written]);
+			written as u32
+		})
+	})
+}
+
+fn host_ordered_map_storage_len_item(name: &[u8], key: &[u8]) -> Option<u32> {
+	with_externalities(|ext| ext.map_len_item(name, key))
+}
+
+fn host_ordered_map_storage_count(name: &[u8]) -> Option<u32> {
+	with_externalities(|ext| ext.map_count(name))
+}
+
+fn host_ordered_map_storage_hash32_item(
+	name: &[u8],
+	key: &[u8],
+	algorithm: Crossing<Hash32Algorithm>,
+) -> Option<[u8; 32]> {
+	with_externalities(|ext| ext.map_hash32_item(name, key, algorithm.into_inner()))
+}
+
+fn host_ordered_map_storage_next_keys(name: &[u8], key: &[u8], count: u32) -> Option<Vec<Vec<u8>>> {
+	with_externalities(|ext| ext.map_next_keys(name, key, count))
+}
+
+fn host_ordered_map_storage_root32(
+	name: &[u8],
+	structure: Crossing<Root32Structure>,
+) -> Option<[u8; 32]> {
+	with_externalities(|ext| ext.map_root32(name, structure.into_inner()))
+}
+
+fn host_ordered_map_storage_dump(name: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+	with_externalities(|ext| ext.map_dump(name))
+}
+
+fn host_ordered_map_storage_dump_hashed(
+	name: &[u8],
+	algorithm: Crossing<Hash32Algorithm>,
+) -> Option<Vec<([u8; 32], [u8; 32])>> {
+	with_externalities(|ext| ext.map_dump_hashed(name, algorithm.into_inner()))
 }
 
 fn host_offchain_index_set(_key: &[u8], _value: &[u8]) {}
