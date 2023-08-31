@@ -25,7 +25,7 @@ use sp_core::storage::BLOB_CHUNK_SIZE;
 use sp_externalities::range_slice;
 #[cfg(not(feature = "std"))]
 use sp_std::collections::btree_set::BTreeSet as Set;
-use sp_std::{collections::btree_map::BTreeMap, hash::Hash, vec::Vec};
+use sp_std::{borrow::Cow, collections::btree_map::BTreeMap, hash::Hash, vec::Vec};
 #[cfg(feature = "std")]
 use std::collections::HashSet as Set;
 
@@ -666,7 +666,7 @@ impl OverlayedChangeSetBlob {
 
 		let (chunk_start, chunk_start_offset) = super::blob_chunk_start_index(start);
 		let (chunk_end, chunk_end_offset) = super::blob_chunk_end_index(end);
-		let result = if chunk_start == chunk_end || (chunk_end_offset == 0 && chunk_end == chunk_start + 1) {
+		let result: Cow<[u8]> = if chunk_start == chunk_end || (chunk_end_offset == 0 && chunk_end == chunk_start + 1) {
 			let chunk = self.get(chunk_start).value_ref();
 			if chunk_end_offset == 0 {
 				chunk[chunk_start_offset..].into()
