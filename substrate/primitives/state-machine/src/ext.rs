@@ -1258,7 +1258,6 @@ mod tests {
 	fn next_child_storage_key_works() {
 		let child_info = DefaultChild::new(b"Child1");
 
-		let overlay = Changes::<Blake2Hasher>::default();
 		let backend = (
 			Storage {
 				top: map![],
@@ -1316,7 +1315,6 @@ mod tests {
 	fn child_storage_works() {
 		let child_info = DefaultChild::new(b"Child1");
 		let child_info = &child_info;
-		let overlay = Changes::<Blake2Hasher>::default();
 		let backend = (
 			Storage {
 				top: map![],

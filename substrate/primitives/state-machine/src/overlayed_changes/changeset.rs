@@ -661,7 +661,7 @@ impl OverlayedChangeSetBlob {
 
 		let (chunk_start, chunk_start_offset) = super::blob_chunk_start_index(start);
 		let (chunk_end, chunk_end_offset) = super::blob_chunk_end_index(end);
-		if chunk_start == chunk_end || (chunk_end_offset == 0 && chunk_end == chunk_start + 1) {
+		let result: Cow<[u8]> = if chunk_start == chunk_end || (chunk_end_offset == 0 && chunk_end == chunk_start + 1) {
 			let chunk = self.get(chunk_start).value_ref();
 			if chunk_end_offset == 0 {
 				chunk[chunk_start_offset..].into()
@@ -686,9 +686,10 @@ impl OverlayedChangeSetBlob {
 					&self.get(chunk_end).value_ref().as_ref()[..chunk_end_offset],
 				);
 			}
-			stats.tally_read_modified(result.len() as u64);
 			result.into()
-		}
+		};
+		stats.tally_read_modified(result.len() as u64);
+		result
 	}
 
 	/// Change blob storage, no offset bound checks.
