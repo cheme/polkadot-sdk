@@ -642,41 +642,57 @@ impl<I: Clone, M> Transactional for OverlayedInfos<I, M> {
 
 impl OverlayedChangeSetBlob {
 	/// Access blob storage build from multiple chunks.
+	///
+	/// Warning this will instantiate and concatenate if start
+	/// and limit goes over two chunks.
 	pub fn storage(
 		&self,
 		start: u32,
 		limit: Option<u32>,
 		size: usize,
 		stats: &StateMachineStats,
-	) -> Vec<u8> {
+	) -> Cow<[u8]> {
 		let start = start as usize;
 		if start >= size {
-			return Vec::new()
+			return Cow::Borrowed(&[])
 		}
 		let size_slice = size - start;
 		let size_slice =
 			sp_std::cmp::min(size_slice, limit.map(|l| l as usize).unwrap_or(size_slice));
 		let end = start + size_slice;
 		if end == start {
-			return Vec::new()
+			return Cow::Borrowed(&[])
 		}
 
 		let (chunk_start, chunk_start_offset) = super::blob_chunk_start_index(start);
 		let (chunk_end, chunk_end_offset) = super::blob_chunk_end_index(end);
-		let mut result = Vec::with_capacity(size_slice);
-		if chunk_start == chunk_end {
-			result.extend_from_slice(
-				&self.get(chunk_start).value_ref().as_ref()[chunk_start_offset..chunk_end_offset],
-			)
-		} else {
-			result.extend_from_slice(
-				&self.get(chunk_start).value_ref().as_ref()[chunk_start_offset..],
-			);
-			for at in chunk_start + 1..chunk_end {
-				result.extend_from_slice(self.get(at).value_ref().as_ref());
+		let result = if chunk_start == chunk_end || (chunk_end_offset == 0 && chunk_end == chunk_start + 1) {
+			let chunk = self.get(chunk_start).value_ref();
+			if chunk_end_offset == 0 {
+				chunk[chunk_start_offset..].into()
+			} else {
+				chunk[chunk_start_offset..chunk_end_offset].into()
 			}
-			result.extend_from_slice(&self.get(chunk_end).value_ref().as_ref()[..chunk_end_offset]);
-		}
+		} else {
+			let mut result = Vec::with_capacity(size_slice);
+			if chunk_start == chunk_end {
+				result.extend_from_slice(
+					&self.get(chunk_start).value_ref().as_ref()
+						[chunk_start_offset..chunk_end_offset],
+				)
+			} else {
+				result.extend_from_slice(
+					&self.get(chunk_start).value_ref().as_ref()[chunk_start_offset..],
+				);
+				for at in chunk_start + 1..chunk_end {
+					result.extend_from_slice(self.get(at).value_ref().as_ref());
+				}
+				result.extend_from_slice(
+					&self.get(chunk_end).value_ref().as_ref()[..chunk_end_offset],
+				);
+			}
+			result.into()
+		};
 		stats.tally_read_modified(result.len() as u64);
 		result
 	}
