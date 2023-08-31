@@ -30,8 +30,8 @@ use sp_core::HashersExternalities;
 use sp_core::{
 	offchain::OffchainOverlayedChange,
 	storage::{
-		Blob as BlobInfo, ChildInfo, DefaultChild, Name, OrderedMap as OrdMapInfo, StateVersion,
-		TransientInfo, BLOB_CHUNK_SIZE,
+		transient::Mode, Blob as BlobInfo, ChildInfo, DefaultChild, Name, OrderedMap as OrdMapInfo,
+		StateVersion, TransientInfo, BLOB_CHUNK_SIZE,
 	},
 };
 #[cfg(feature = "std")]
@@ -443,7 +443,11 @@ impl<H: Hasher> Changes<H> {
 	) -> Option<(BlobMeta, impl Iterator<Item = [u8; BLOB_CHUNK_SIZE]>)> {
 		let infos = infos.into_value();
 
-		if !matches!(infos.infos.mode, Some(sp_core::storage::transient::Mode::Archive)) {
+		if !matches!(infos.infos.mode, Some(Mode::Archive)) {
+			return None
+		}
+
+		if infos.removed {
 			return None
 		}
 
@@ -910,23 +914,21 @@ impl<H: Hasher> Changes<H> {
 				.into_iter()
 				.map(|(key, child)| (key, (child.changes.drain_committed(), child.infos))),
 			take(&mut self.ordered_maps).into_iter().filter_map(|(_key, mut ordmap)| {
-				let info = ordmap.infos.drain_committed();
-				(!info.removed).then(|| {
-					(
-						info,
-						sp_std::mem::take(unsafe { rc_mut_unchecked(&mut ordmap.changes) })
-							.drain_committed(),
-					)
-				})
+				let infos = ordmap.infos.drain_committed();
+				if !matches!(infos.infos.mode, Some(Mode::Archive)) {
+					return None
+				}
+				if infos.removed {
+					return None
+				}
+				Some((
+					infos,
+					sp_std::mem::take(unsafe { rc_mut_unchecked(&mut ordmap.changes) })
+						.drain_committed(),
+				))
 			}),
 			take(&mut self.blobs).into_iter().filter_map(|(_key, blob)| {
-				if let Some((info, iter)) =
-					Self::blob_chunks_into_committed(blob.changes, blob.infos)
-				{
-					(!info.removed).then(|| (info, iter))
-				} else {
-					None
-				}
+				Self::blob_chunks_into_committed(blob.changes, blob.infos)
 			}),
 		)
 	}
