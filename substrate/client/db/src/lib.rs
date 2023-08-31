@@ -37,6 +37,7 @@ mod parity_db;
 mod pinned_blocks_cache;
 mod record_stats_state;
 mod stats;
+mod transient_storage;
 #[cfg(any(feature = "rocksdb", test))]
 mod upgrade;
 mod utils;
@@ -51,10 +52,12 @@ use std::{
 	sync::Arc,
 };
 
+pub use crate::transient_storage::{ErrorCode, TransientArchiveConfig, TransientStorageHook};
 use crate::{
 	pinned_blocks_cache::PinnedBlocksCache,
 	record_stats_state::RecordStatsState,
 	stats::StateUsageStats,
+	transient_storage::{TransientArchive, TransientArchiveInMemory},
 	utils::{meta_keys, read_db, read_meta, DatabaseType, Meta},
 };
 use codec::{Decode, Encode};
@@ -86,9 +89,9 @@ use sp_runtime::{
 };
 use sp_state_machine::{
 	backend::{AsTrieBackend, Backend as StateBackend},
-	BackendTransaction, ChildStorageCollection, DBValue, IndexOperation, IterArgs,
-	OffchainChangesCollection, StateMachineStats, StorageCollection, StorageIterator, StorageKey,
-	StorageValue, UsageInfo as StateUsageInfo,
+	BackendTransaction, BlobsCollection, ChildStorageCollection, DBValue, IndexOperation, IterArgs,
+	OffchainChangesCollection, OrdMapsCollection, StateMachineStats, StorageCollection,
+	StorageIterator, StorageKey, StorageValue, UsageInfo as StateUsageInfo,
 };
 use sp_trie::{cache::SharedTrieCache, prefixed_key, MemoryDB, PrefixedMemoryDB};
 
@@ -820,6 +823,8 @@ pub struct BlockImportOperation<Block: BlockT> {
 	db_updates: PrefixedMemoryDB<HashingFor<Block>>,
 	storage_updates: StorageCollection,
 	child_storage_updates: ChildStorageCollection,
+	btrees_storage_updates: OrdMapsCollection,
+	blobs_storage_updates: BlobsCollection,
 	offchain_storage_updates: OffchainChangesCollection,
 	pending_block: Option<PendingBlock<Block>>,
 	aux_ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
@@ -866,10 +871,7 @@ impl<Block: BlockT> BlockImportOperation<Block> {
 		}
 
 		let child_delta = storage.children_default.values().map(|child_content| {
-			(
-				&child_content.child_info,
-				child_content.data.iter().map(|(k, v)| (&k[..], Some(&v[..]))),
-			)
+			(&child_content.info, child_content.data.iter().map(|(k, v)| (&k[..], Some(&v[..]))))
 		});
 
 		let (root, transaction) = self.old_state.full_storage_root(
@@ -878,8 +880,42 @@ impl<Block: BlockT> BlockImportOperation<Block> {
 			state_version,
 		);
 
+		self.btrees_storage_updates = storage
+			.ordered_map_storages
+			.into_iter()
+			.filter_map(|(_, btree)| {
+				matches!(btree.info.mode, Some(sp_core::storage::transient::Mode::Archive)).then(
+					|| {
+						(
+							btree.info.into(),
+							btree.data.into_iter().map(|(k, v)| (k, Some(v))).collect(),
+						)
+					},
+				)
+			})
+			.collect();
+
+		self.blobs_storage_updates = storage
+			.blob_storages
+			.into_iter()
+			.filter_map(|(_, blob)| {
+				matches!(blob.info.mode, Some(sp_core::storage::transient::Mode::Archive))
+					.then(|| (blob.info.into(), blob.data))
+			})
+			.collect();
+
 		self.db_updates = transaction;
 		Ok(root)
+	}
+
+	fn update_transient_storage(
+		&mut self,
+		btrees_update: OrdMapsCollection,
+		blobs_update: BlobsCollection,
+	) -> ClientResult<()> {
+		self.btrees_storage_updates = btrees_update;
+		self.blobs_storage_updates = blobs_update;
+		Ok(())
 	}
 }
 
@@ -947,9 +983,12 @@ impl<Block: BlockT> sc_client_api::backend::BlockImportOperation<Block>
 		&mut self,
 		update: StorageCollection,
 		child_update: ChildStorageCollection,
+		btrees_update: OrdMapsCollection,
+		blobs_update: BlobsCollection,
 	) -> ClientResult<()> {
 		self.storage_updates = update;
 		self.child_storage_updates = child_update;
+		self.update_transient_storage(btrees_update, blobs_update)?;
 		Ok(())
 	}
 
@@ -1102,6 +1141,7 @@ pub struct Backend<Block: BlockT> {
 	state_usage: Arc<StateUsageStats>,
 	genesis_state: RwLock<Option<Arc<DbGenesisStorage<Block>>>>,
 	shared_trie_cache: Option<sp_trie::cache::SharedTrieCache<HashingFor<Block>>>,
+	transient_in_memory: RwLock<TransientArchiveInMemory<Block>>,
 }
 
 impl<Block: BlockT> Backend<Block> {
@@ -1206,6 +1246,25 @@ impl<Block: BlockT> Backend<Block> {
 		let is_archive_pruning = state_pruning_used.is_archive();
 		let blockchain = BlockchainDb::new(db.clone())?;
 
+		// TODO should have its own conf
+		let mut plugin_path = config
+			.source
+			.path()
+			.map(Path::to_path_buf)
+			.unwrap_or_else(|| "./storage_plugins".into());
+		plugin_path.pop();
+		plugin_path.push("storage_plugins");
+		// TODO config and hooks from service and cli.
+		let hooks = Vec::new();
+		let transient_in_memory = RwLock::new(TransientArchiveInMemory::new(
+			TransientArchiveConfig {
+				pruning: state_db.pruning_mode(),
+				plugin_path,
+				use_default_storage: true,
+				assert_nb_plugins: None,
+			},
+			hooks,
+		)?);
 		let storage_db =
 			StorageDb { db: db.clone(), state_db, prefix_keys: !db.supports_ref_counting() };
 
@@ -1225,6 +1284,7 @@ impl<Block: BlockT> Backend<Block> {
 			shared_trie_cache: config.trie_cache_maximum_size.map(|maximum_size| {
 				SharedTrieCache::new(sp_trie::cache::CacheSize::new(maximum_size))
 			}),
+			transient_in_memory,
 		};
 
 		// Older DB versions have no last state key. Check if the state is available and set it.
@@ -1404,6 +1464,18 @@ impl<Block: BlockT> Backend<Block> {
 					"Can't canonicalize missing block number #{to_canonicalize} when for best block {best_hash:?} (#{best_number})",
 				))
 			})?;
+			let (parent_hash, number) = sc_client_api::blockchain::HeaderBackend::header(
+				&self.blockchain,
+				hash_to_canonicalize,
+			)?
+			.map(|header| (*header.parent_hash(), *header.number()))
+			.ok_or_else(|| {
+				let best_hash = info.best_hash;
+
+				sp_blockchain::Error::Backend(format!(
+					"Can't canonicalize missing block number #{to_canonicalize} when for best block {best_hash:?} (#{best_number})",
+				))
+			})?;
 
 			if !sc_client_api::Backend::have_state_at(
 				self,
@@ -1419,6 +1491,16 @@ impl<Block: BlockT> Backend<Block> {
 					sc_state_db::Error<sp_database::error::DatabaseError>,
 				>,
 			)?;
+
+			let mut transient_storage = TransientArchive::<Block> {
+				db: self.storage.db.clone(),
+				hash: &hash_to_canonicalize,
+				parent_hash: &parent_hash,
+				number,
+				in_mem: &mut *self.transient_in_memory.write(),
+			};
+			transient_storage.canonicalize(transaction)?;
+
 			apply_state_commit(transaction, commit);
 		}
 
@@ -1427,6 +1509,7 @@ impl<Block: BlockT> Backend<Block> {
 
 	fn try_commit_operation(&self, mut operation: BlockImportOperation<Block>) -> ClientResult<()> {
 		let mut transaction = Transaction::new();
+		let mut touched_transient = None;
 
 		operation.apply_aux(&mut transaction);
 		operation.apply_offchain(&mut transaction);
@@ -1590,6 +1673,20 @@ impl<Block: BlockT> Backend<Block> {
 					});
 				}
 
+				let mut transient_storage = TransientArchive::<Block> {
+					in_mem: &mut *self.transient_in_memory.write(),
+					db: self.storage.db.clone(),
+					hash: &hash,
+					parent_hash: &parent_hash,
+					number,
+				};
+				transient_storage.add_transient_changes(
+					operation.btrees_storage_updates,
+					operation.blobs_storage_updates,
+					&mut transaction,
+				)?;
+				touched_transient = Some((hash, parent_hash, number));
+
 				// Check if need to finalize. Genesis is always finalized instantly.
 				let finalized = number_u64 == 0 || pending_block.leaf_state.is_final();
 				finalized
@@ -1731,7 +1828,25 @@ impl<Block: BlockT> Backend<Block> {
 			}
 		}
 
-		self.storage.db.commit(transaction)?;
+		let r = self.storage.db.commit(transaction);
+
+		if let Some((hash, parent_hash, number)) = touched_transient {
+			let mut transient_storage = TransientArchive::<Block> {
+				in_mem: &mut *self.transient_in_memory.write(),
+				db: self.storage.db.clone(),
+				hash: &hash,
+				parent_hash: &parent_hash,
+				number,
+			};
+
+			if r.is_ok() {
+				transient_storage.commited_transient_changes()?;
+			} else {
+				transient_storage.rollbacked_transient_changes()?;
+			}
+		}
+
+		r?;
 
 		// Apply all in-memory state changes.
 		// Code beyond this point can't fail.
@@ -1763,6 +1878,18 @@ impl<Block: BlockT> Backend<Block> {
 		current_transaction_justifications: &mut HashMap<Block::Hash, Justification>,
 	) -> ClientResult<()> {
 		let f_num = *f_header.number();
+		let f_parent = *f_header.parent_hash();
+
+		{
+			let mut transient_storage = TransientArchive::<Block> {
+				in_mem: &mut *self.transient_in_memory.write(),
+				db: self.storage.db.clone(),
+				hash: &f_hash,
+				parent_hash: &f_parent,
+				number: f_num.clone(),
+			};
+			transient_storage.canonicalize(transaction)?;
+		}
 
 		let lookup_key = utils::number_and_hash_to_lookup_key(f_num, f_hash)?;
 		if with_state {
@@ -1868,6 +1995,26 @@ impl<Block: BlockT> Backend<Block> {
 		id: BlockId<Block>,
 	) -> ClientResult<()> {
 		debug!(target: "db", "Removing block #{}", id);
+		if let Some(hash) =
+			sc_client_api::blockchain::HeaderBackend::block_hash_from_id(&self.blockchain, &id)?
+		{
+			if let Some(header) =
+				sc_client_api::blockchain::HeaderBackend::header(&self.blockchain, hash)?
+			{
+				let number = header.number();
+				let hash = header.hash();
+				let parent_hash = header.parent_hash();
+				let mut transient_storage = TransientArchive::<Block> {
+					in_mem: &mut *self.transient_in_memory.write(),
+					db: self.storage.db.clone(),
+					hash: &hash,
+					parent_hash: &parent_hash,
+					number: number.clone(),
+				};
+				transient_storage.drop_or_prune(transaction)?;
+			}
+		}
+
 		utils::remove_from_db(
 			transaction,
 			&*self.storage.db,
@@ -2047,6 +2194,8 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 			db_updates: PrefixedMemoryDB::default(),
 			storage_updates: Default::default(),
 			child_storage_updates: Default::default(),
+			btrees_storage_updates: Default::default(),
+			blobs_storage_updates: Default::default(),
 			offchain_storage_updates: Default::default(),
 			aux_ops: Vec::new(),
 			finalized_blocks: Vec::new(),
@@ -2529,6 +2678,51 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 
 impl<Block: BlockT> sc_client_api::backend::LocalBackend<Block> for Backend<Block> {}
 
+/// To test data equality from a linked plugin.
+#[cfg(any(test, feature = "test-plugin"))]
+pub fn test_btrees_collection(
+) -> std::collections::HashMap<Vec<u8>, sp_core::storage::StorageOrderedMap> {
+	let mut result =
+		std::collections::HashMap::<Vec<u8>, sp_core::storage::StorageOrderedMap>::default();
+	for i in 0..5 {
+		result.insert(
+			vec![i as u8; i],
+			sp_core::storage::StorageOrderedMap {
+				data: (0..i).map(|i| (vec![i as u8; i], vec![i as u8; i])).collect(),
+				info: sp_core::storage::OrderedMap {
+					name: vec![i as u8; i],
+					mode: Some(sp_core::storage::transient::Mode::Archive),
+					algorithm: None,
+				},
+				root: None,
+			},
+		);
+	}
+	result
+}
+
+/// To test data equality from a linked plugin.
+#[cfg(any(test, feature = "test-plugin"))]
+pub fn test_blobs_collection() -> std::collections::HashMap<Vec<u8>, sp_core::storage::StorageBlob>
+{
+	let mut result = std::collections::HashMap::<Vec<u8>, sp_core::storage::StorageBlob>::default();
+	for i in 0..5 {
+		result.insert(
+			vec![i as u8; i],
+			sp_core::storage::StorageBlob {
+				data: vec![i as u8; i],
+				info: sp_core::storage::Blob {
+					name: vec![i as u8; i],
+					mode: Some(sp_core::storage::transient::Mode::Archive),
+					algorithm: None,
+				},
+				hash: None,
+			},
+		);
+	}
+	result
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
 	use super::*;
@@ -2551,31 +2745,86 @@ pub(crate) mod tests {
 
 	pub(crate) type Block = RawBlock<ExtrinsicWrapper<u64>>;
 
+	// TODO maybe make this part of api ( field in block_import and param in update_storage)
+	pub struct Changes {
+		update: StorageCollection,
+		child_update: ChildStorageCollection,
+		btrees_update: OrdMapsCollection,
+		blobs_update: BlobsCollection,
+	}
+
 	pub fn insert_header(
 		backend: &Backend<Block>,
 		number: u64,
 		parent_hash: H256,
-		changes: Option<Vec<(Vec<u8>, Vec<u8>)>>,
+		changes: Option<Changes>,
 		extrinsics_root: H256,
 	) -> H256 {
-		insert_block(backend, number, parent_hash, changes, extrinsics_root, Vec::new(), None)
-			.unwrap()
+		insert_header_with_finalized(backend, number, parent_hash, changes, extrinsics_root, None)
+	}
+
+	pub fn insert_header_with_finalized(
+		backend: &Backend<Block>,
+		number: u64,
+		parent_hash: H256,
+		changes: Option<Changes>,
+		extrinsics_root: H256,
+		finalized: Option<H256>,
+	) -> H256 {
+		insert_block_with_finalized(
+			backend,
+			number,
+			parent_hash,
+			changes,
+			extrinsics_root,
+			Vec::new(),
+			None,
+			finalized,
+		)
+		.unwrap()
 	}
 
 	pub fn insert_block(
 		backend: &Backend<Block>,
 		number: u64,
 		parent_hash: H256,
-		_changes: Option<Vec<(Vec<u8>, Vec<u8>)>>,
+		changes: Option<Changes>,
 		extrinsics_root: H256,
 		body: Vec<ExtrinsicWrapper<u64>>,
 		transaction_index: Option<Vec<IndexOperation>>,
 	) -> Result<H256, sp_blockchain::Error> {
+		insert_block_with_finalized(
+			backend,
+			number,
+			parent_hash,
+			changes,
+			extrinsics_root,
+			body,
+			transaction_index,
+			None,
+		)
+	}
+
+	pub fn insert_block_with_finalized(
+		backend: &Backend<Block>,
+		number: u64,
+		parent_hash: H256,
+		changes: Option<Changes>,
+		extrinsics_root: H256,
+		body: Vec<ExtrinsicWrapper<u64>>,
+		transaction_index: Option<Vec<IndexOperation>>,
+		finalized: Option<H256>,
+	) -> Result<H256, sp_blockchain::Error> {
 		use sp_runtime::testing::Digest;
 
 		let digest = Digest::default();
-		let mut header =
-			Header { number, parent_hash, state_root: Default::default(), digest, extrinsics_root };
+		let mut header = Header {
+			number,
+			parent_hash,
+			state_root: BlakeTwo256::trie_root(Vec::new(), StateVersion::V1),
+			digest,
+			extrinsics_root,
+		};
 
 		let block_hash = if number == 0 { Default::default() } else { parent_hash };
 		let mut op = backend.begin_operation().unwrap();
@@ -2590,10 +2839,17 @@ pub(crate) mod tests {
 			StateVersion::V1,
 		);
 		op.update_db_storage(overlay).unwrap();
+		if let Some(changes) = changes {
+			op.update_transient_storage(changes.btrees_update, changes.blobs_update)
+				.unwrap();
+		}
 		header.state_root = root.into();
 
 		op.set_block_data(header.clone(), Some(body), None, None, NewBlockState::Best)
 			.unwrap();
+		if let Some(finalized) = finalized {
+			op.mark_finalized(finalized, None).unwrap();
+		}
 
 		backend.commit_operation(op)?;
 
@@ -2604,6 +2860,16 @@ pub(crate) mod tests {
 		backend: &Backend<Block>,
 		number: u64,
 		parent_hash: H256,
+		extrinsics_root: H256,
+	) -> H256 {
+		insert_header_no_head_with_changes(backend, number, parent_hash, None, extrinsics_root)
+	}
+
+	pub fn insert_header_no_head_with_changes(
+		backend: &Backend<Block>,
+		number: u64,
+		parent_hash: H256,
+		changes: Option<Changes>,
 		extrinsics_root: H256,
 	) -> H256 {
 		use sp_runtime::testing::Digest;
@@ -2631,6 +2897,15 @@ pub(crate) mod tests {
 
 		op.set_block_data(header.clone(), None, None, None, NewBlockState::Normal)
 			.unwrap();
+		if let Some(changes) = changes {
+			op.update_storage(
+				changes.update,
+				changes.child_update,
+				changes.btrees_update,
+				changes.blobs_update,
+			)
+			.unwrap();
+		}
 		backend.commit_operation(op).unwrap();
 
 		header.hash()
@@ -2716,6 +2991,8 @@ pub(crate) mod tests {
 				Storage {
 					top: storage.into_iter().collect(),
 					children_default: Default::default(),
+					ordered_map_storages: Default::default(),
+					blob_storages: Default::default(),
 				},
 				state_version,
 			)
@@ -2754,7 +3031,7 @@ pub(crate) mod tests {
 			op.update_db_storage(overlay).unwrap();
 			header.state_root = root.into();
 
-			op.update_storage(storage, Vec::new()).unwrap();
+			op.update_storage(storage, Vec::new(), Vec::new(), Vec::new()).unwrap();
 			op.set_block_data(header.clone(), Some(vec![]), None, None, NewBlockState::Best)
 				.unwrap();
 
@@ -2791,7 +3068,12 @@ pub(crate) mod tests {
 			let hash = header.hash();
 
 			op.reset_storage(
-				Storage { top: Default::default(), children_default: Default::default() },
+				Storage {
+					top: Default::default(),
+					children_default: Default::default(),
+					ordered_map_storages: Default::default(),
+					blob_storages: Default::default(),
+				},
 				state_version,
 			)
 			.unwrap();
@@ -3295,6 +3577,8 @@ pub(crate) mod tests {
 				Storage {
 					top: storage.into_iter().collect(),
 					children_default: Default::default(),
+					ordered_map_storages: Default::default(),
+					blob_storages: Default::default(),
 				},
 				state_version,
 			)
@@ -3330,7 +3614,7 @@ pub(crate) mod tests {
 			header.state_root = root.into();
 			let hash = header.hash();
 
-			op.update_storage(storage, Vec::new()).unwrap();
+			op.update_storage(storage, Vec::new(), Vec::new(), Vec::new()).unwrap();
 			op.set_block_data(header, Some(vec![]), None, None, NewBlockState::Normal)
 				.unwrap();
 
@@ -4006,7 +4290,7 @@ pub(crate) mod tests {
 				op.update_db_storage(overlay).unwrap();
 				header.state_root = root.into();
 
-				op.update_storage(storage, Vec::new()).unwrap();
+				op.update_storage(storage, Vec::new(), Vec::new(), Vec::new()).unwrap();
 
 				op.set_block_data(
 					header.clone(),
@@ -4051,7 +4335,7 @@ pub(crate) mod tests {
 				op.update_db_storage(overlay).unwrap();
 				header.state_root = root.into();
 
-				op.update_storage(storage, Vec::new()).unwrap();
+				op.update_storage(storage, Vec::new(), Vec::new(), Vec::new()).unwrap();
 
 				op.set_block_data(
 					header.clone(),
@@ -4096,7 +4380,7 @@ pub(crate) mod tests {
 				op.update_db_storage(overlay).unwrap();
 				header.state_root = root.into();
 
-				op.update_storage(storage, Vec::new()).unwrap();
+				op.update_storage(storage, Vec::new(), Vec::new(), Vec::new()).unwrap();
 
 				op.set_block_data(
 					header.clone(),
@@ -4133,7 +4417,7 @@ pub(crate) mod tests {
 				op.update_db_storage(overlay).unwrap();
 				header.state_root = root.into();
 
-				op.update_storage(storage, Vec::new()).unwrap();
+				op.update_storage(storage, Vec::new(), Vec::new(), Vec::new()).unwrap();
 
 				op.set_block_data(
 					header.clone(),
@@ -4406,5 +4690,211 @@ pub(crate) mod tests {
 		assert!(bc.body(fork_hash_3).unwrap().is_some());
 		backend.unpin_block(fork_hash_3);
 		assert!(bc.body(fork_hash_3).unwrap().is_none());
+	}
+
+	#[test]
+	fn test_persist_transient() {
+		//let pruning_modes = [BlocksPruning::Some(1), BlocksPruning::KeepAll];
+		//let pruning_modes = [BlocksPruning::KeepAll];
+		let pruning_modes = [BlocksPruning::Some(1)];
+
+		for pruning_mode in pruning_modes {
+			fn new_changes(i: u8) -> Changes {
+				Changes {
+					update: vec![],
+					child_update: vec![],
+					btrees_update: vec![(
+						sp_core::storage::OrderedMap {
+							name: vec![i],
+							mode: Some(sp_core::storage::transient::Mode::Archive),
+							algorithm: None,
+						}
+						.into(),
+						vec![(vec![i], Some(vec![i])), (vec![254], Some(vec![i]))],
+					)],
+					blobs_update: vec![
+						(
+							sp_core::storage::Blob {
+								name: vec![i],
+								mode: Some(sp_core::storage::transient::Mode::Archive),
+								algorithm: None,
+							}
+							.into(),
+							vec![i],
+						),
+						(
+							sp_core::storage::Blob {
+								name: vec![254],
+								mode: Some(sp_core::storage::transient::Mode::Archive),
+								algorithm: None,
+							}
+							.into(),
+							vec![i],
+						),
+					],
+				}
+			}
+			let backend = Backend::<Block>::new_test_with_tx_storage(pruning_mode, 1);
+			let blockchain = backend.blockchain();
+			let mut hashes = Vec::new();
+			let default_hash = Default::default();
+			hashes.push(insert_header(
+				&backend,
+				0,
+				default_hash,
+				Some(new_changes(0)),
+				Default::default(),
+			));
+			let finalized = if matches!(pruning_mode, BlocksPruning::Some(1)) {
+				Some(hashes[0]) // consider a 1 block window to finalization
+			} else {
+				None
+			};
+			let block_2 = insert_header_with_finalized(
+				&backend,
+				1,
+				hashes[0],
+				Some(new_changes(1)),
+				Default::default(),
+				finalized,
+			);
+			let block2bis = if matches!(pruning_mode, BlocksPruning::KeepAll) {
+				let block2bis = insert_header_no_head_with_changes(
+					&backend,
+					2,
+					hashes[0],
+					Some(new_changes(255)),
+					Default::default(),
+				);
+				assert!(block_2 != block2bis);
+				Some(block2bis)
+			} else {
+				None
+			};
+			hashes.push(block_2);
+			let finalized =
+				if matches!(pruning_mode, BlocksPruning::Some(1)) { Some(hashes[1]) } else { None };
+			hashes.push(insert_header_with_finalized(
+				&backend,
+				2,
+				hashes[1],
+				Some(new_changes(2)),
+				Default::default(),
+				finalized,
+			));
+			let finalized =
+				if matches!(pruning_mode, BlocksPruning::Some(1)) { Some(hashes[2]) } else { None };
+			hashes.push(insert_header_with_finalized(
+				&backend,
+				3,
+				hashes[2],
+				Some(new_changes(3)),
+				Default::default(),
+				finalized,
+			));
+			if let Some(block2bis) = block2bis {
+				assert_eq!(blockchain.leaves().unwrap(), vec![hashes[3], block2bis]);
+			} else {
+				assert_eq!(blockchain.leaves().unwrap(), vec![hashes[3]]);
+			}
+			assert_eq!(blockchain.info().best_hash, hashes[3]);
+			let start = if matches!(pruning_mode, BlocksPruning::Some(1)) { 2 } else { 0 };
+			for i in 0..start {
+				// pruned blocks
+				let transient_storage = TransientArchive::<Block> {
+					db: backend.storage.db.clone(),
+					hash: &hashes[i],
+					parent_hash: if i == 0 { &default_hash } else { &hashes[i - 1] },
+					number: i as u64,
+					in_mem: &mut *backend.transient_in_memory.write(),
+				};
+				let i = i as u8;
+				assert_eq!(transient_storage.get_blob(&[254]), None);
+				assert_eq!(transient_storage.get_btree(&[i], &[i]), None);
+				assert_eq!(transient_storage.get_btree(&[i], &[254]), None);
+				assert_eq!(transient_storage.get_blob(&[i]), None);
+			}
+			for i in start..4 {
+				// present blocks
+				let transient_storage = TransientArchive::<Block> {
+					db: backend.storage.db.clone(),
+					hash: &hashes[i],
+					parent_hash: if i == 0 { &default_hash } else { &hashes[i - 1] },
+					number: i as u64,
+					in_mem: &mut *backend.transient_in_memory.write(),
+				};
+				let i = i as u8;
+				assert_eq!(transient_storage.get_blob(&[254]), Some(vec![i]));
+				for j in 0..4 {
+					if j == i {
+						assert_eq!(transient_storage.get_btree(&[j], &[j]), Some(vec![j]));
+						assert_eq!(transient_storage.get_btree(&[j], &[254]), Some(vec![j]));
+						assert_eq!(transient_storage.get_blob(&[j]), Some(vec![j]));
+					} else {
+						assert_eq!(transient_storage.get_btree(&[j], &[j]), None);
+						assert_eq!(transient_storage.get_btree(&[j], &[254]), None);
+						assert_eq!(transient_storage.get_blob(&[j]), None);
+					}
+				}
+			}
+			if let Some(block2bis) = block2bis {
+				// archive present
+				let transient_non_canonical = TransientArchive::<Block> {
+					db: backend.storage.db.clone(),
+					hash: &block2bis,
+					parent_hash: &hashes[1],
+					number: 2,
+					in_mem: &mut *backend.transient_in_memory.write(),
+				};
+				for i in 0..6 {
+					assert_eq!(transient_non_canonical.get_blob(&[i]), None);
+				}
+				assert_eq!(transient_non_canonical.get_blob(&[255]), Some(vec![255]));
+				assert_eq!(transient_non_canonical.get_btree(&[255], &[255]), Some(vec![255]));
+			}
+		}
+	}
+
+	#[cfg(feature = "test-plugin")]
+	#[test]
+	fn check_plugin_interface() {
+		let mut path = std::env::current_dir().unwrap();
+		path.push("plugin");
+		println!("{:?}", path);
+		let state_version = StateVersion::default();
+		let db = Backend::<Block>::new_test(2, 0);
+		db.transient_in_memory.write().load_plugins(Some((&path, Some(1)))).unwrap();
+
+		let mut op = db.begin_operation().unwrap();
+		let mut header = Header {
+			number: 0,
+			parent_hash: Default::default(),
+			state_root: Default::default(),
+			digest: Default::default(),
+			extrinsics_root: Default::default(),
+		};
+
+		let storage = vec![(vec![1, 3, 5], vec![2, 4, 6]), (vec![1, 2, 3], vec![9, 9, 9])];
+
+		header.state_root = op
+			.old_state
+			.storage_root(storage.iter().map(|(x, y)| (&x[..], Some(&y[..]))), state_version)
+			.0
+			.into();
+
+		op.reset_storage(
+			Storage {
+				top: storage.into_iter().collect(),
+				children_default: Default::default(),
+				ordered_map_storages: super::test_btrees_collection(),
+				blob_storages: super::test_blobs_collection(),
+			},
+			state_version,
+		)
+		.unwrap();
+		op.set_block_data(header.clone(), Some(vec![]), None, None, NewBlockState::Best)
+			.unwrap();
+
+		db.commit_operation(op).unwrap();
 	}
 }

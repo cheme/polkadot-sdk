@@ -65,13 +65,15 @@ pub use sp_application_crypto as app_crypto;
 
 pub use sp_core::storage::StateVersion;
 #[cfg(feature = "std")]
-pub use sp_core::storage::{Storage, StorageChild};
+pub use sp_core::storage::{Storage, StorageBlob, StorageDefaultChild, StorageOrderedMap};
 
 use sp_core::{
 	crypto::{self, ByteArray, FromEntropy},
 	ecdsa, ed25519,
 	hash::{H256, H512},
 	sr25519,
+	storage::transient::{Hash32Algorithm, HasherHandle},
+	Hashers,
 };
 use sp_std::prelude::*;
 
@@ -243,11 +245,22 @@ impl BuildStorage for sp_core::storage::Storage {
 			let k = k.clone();
 			if let Some(map) = storage.children_default.get_mut(&k) {
 				map.data.extend(other_map.data.iter().map(|(k, v)| (k.clone(), v.clone())));
-				if !map.child_info.try_update(&other_map.child_info) {
+				if !map.info.try_update(&other_map.info) {
 					return Err("Incompatible child info update".to_string())
 				}
 			} else {
 				storage.children_default.insert(k, other_map.clone());
+			}
+		}
+		for (k, other_map) in self.ordered_map_storages.iter() {
+			let k = k.clone();
+			if let Some(map) = storage.ordered_map_storages.get_mut(&k) {
+				map.data.extend(other_map.data.iter().map(|(k, v)| (k.clone(), v.clone())));
+				if !map.info.try_update(&other_map.info) {
+					return Err("Incompatible child info update".to_string())
+				}
+			} else {
+				storage.ordered_map_storages.insert(k, other_map.clone());
 			}
 		}
 		Ok(())
@@ -1102,6 +1115,37 @@ mod tests {
 			assert_eq!(sp_io::storage::get(b"a").unwrap(), vec![1u8; 44]);
 			assert_eq!(sp_io::storage::get(b"b").unwrap(), vec![2u8; 33]);
 		});
+	}
+}
+
+/// trait `Hashers` implementation to use (calls sp_io).
+pub struct IoHashers;
+
+impl Hashers for IoHashers {
+	const IS_USING_HOST: bool = true;
+
+	/*
+	fn hash_with(data: &[u8], algo: Hash32Algorithm) -> [u8; 32] {
+		match algo {
+			Hash32Algorithm::Blake2b256 => sp_io::hashing::blake2_256(data),
+		}
+	}
+	*/
+
+	fn hash_state_with(algo: Hash32Algorithm) -> Option<HasherHandle> {
+		sp_io::hashing::get_hasher(algo.into())
+	}
+
+	fn hash_update(state: HasherHandle, data: &[u8]) -> bool {
+		sp_io::hashing::hasher_update(state, data)
+	}
+
+	fn hash_drop(state: Option<HasherHandle>) {
+		sp_io::hashing::drop_hasher(state)
+	}
+
+	fn hash_finalize(state: HasherHandle) -> Option<[u8; 32]> {
+		sp_io::hashing::hasher_finalize(state)
 	}
 }
 

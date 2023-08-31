@@ -292,6 +292,9 @@ name = "arbitrary"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2d098ff73c1ca148721f37baad5ea6a465a13f9573aba8641fbbbae8164a54e"
+dependencies = [
+ "derive_arbitrary",
+]
 
 [[package]]
 name = "arc-swap"
@@ -2097,6 +2100,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_arbitrary"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53e0efad4403bfc52dc201159c4b842a246a14b98c64b55dfd0f2d89729dfeb8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.18",
+]
+
+[[package]]
 name = "derive_builder"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2532,8 +2546,7 @@ dependencies = [
 [[package]]
 name = "environmental"
 version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e48c92028aaa870e83d51c64e5d4e0b6981b360c522198c23959f219a4e1b15b"
+source = "git+https://github.com/cheme/environmental?branch=init_default#2c942c5d749d566ee3330289875736ed37fdf836"
 
 [[package]]
 name = "errno"
@@ -2561,6 +2574,17 @@ name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
+
+[[package]]
+name = "example-plugin"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "sc-client-db",
+ "sp-blockchain",
+ "sp-runtime",
+ "sp-state-machine",
+]
 
 [[package]]
 name = "exit-future"
@@ -2976,10 +3000,12 @@ dependencies = [
  "frame-metadata",
  "frame-support-procedural",
  "frame-system",
+ "hash256-std-hasher",
  "impl-trait-for-tuples",
  "k256",
  "log",
  "macro_magic",
+ "once_cell",
  "parity-scale-codec",
  "paste",
  "pretty_assertions",
@@ -9395,6 +9421,7 @@ dependencies = [
  "kvdb",
  "kvdb-memorydb",
  "kvdb-rocksdb",
+ "libloading",
  "linked-hash-map",
  "log",
  "parity-db",
@@ -11820,6 +11847,7 @@ dependencies = [
 name = "sp-state-machine"
 version = "0.28.0"
 dependencies = [
+ "arbitrary",
  "array-bytes",
  "assert_matches",
  "hash-db",
@@ -11871,6 +11899,7 @@ version = "8.0.0"
 name = "sp-storage"
 version = "13.0.0"
 dependencies = [
+ "hash-db",
  "impl-serde",
  "parity-scale-codec",
  "ref-cast",
@@ -12325,6 +12354,7 @@ dependencies = [
  "array-bytes",
  "async-trait",
  "futures",
+ "log",
  "parity-scale-codec",
  "sc-client-api",
  "sc-client-db",
@@ -12398,6 +12428,7 @@ name = "substrate-test-runtime-client"
 version = "2.0.0"
 dependencies = [
  "futures",
+ "log",
  "sc-block-builder",
  "sc-client-api",
  "sc-consensus",

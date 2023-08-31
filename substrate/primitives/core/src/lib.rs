@@ -401,6 +401,128 @@ macro_rules! impl_maybe_marker_std_or_serde {
 // everybody.
 pub const MAX_POSSIBLE_ALLOCATION: u32 = 33554432; // 2^25 bytes, 32 MiB
 
+pub use sp_storage::transient::{Hash32Algorithm, HasherHandle, Hashers};
+
+/// Utility function to easilly implement `Hashers` from
+/// the default `Hasher`.
+/// TODO consider moving Hashers trait here and simply make it default method.
+#[cfg(feature = "full_crypto")]
+pub fn hash32_with_algorithm_inline(data: &[u8], algo: Hash32Algorithm) -> [u8; 32] {
+	match algo {
+		Hash32Algorithm::Blake2b256 => crate::hashing::blake2_256(data).into(),
+	}
+}
+
+/// Hasher state (when processing in multiple steps).
+#[cfg(feature = "full_crypto")]
+#[derive(Clone)]
+pub enum Hash32State {
+	/// Blake2b hasher, 256 bits version.
+	Blake2b256(crate::hashing::Blake2b256State),
+}
+
+#[cfg(feature = "full_crypto")]
+impl Hash32State {
+	/// Instantiate a new stat.
+	pub fn new(algo: sp_storage::transient::Hash32Algorithm) -> Self {
+		match algo {
+			sp_storage::transient::Hash32Algorithm::Blake2b256 =>
+				Hash32State::Blake2b256(crate::hashing::Blake2b256State::new()),
+		}
+	}
+
+	/// Hash more content.
+	pub fn update(&mut self, data: &[u8]) {
+		match self {
+			Hash32State::Blake2b256(blake) => blake.update(data),
+		}
+	}
+
+	/// Obtain hash.
+	pub fn finalize(self) -> [u8; 32] {
+		match self {
+			Hash32State::Blake2b256(blake) => blake.finalize(),
+		}
+	}
+}
+
+/// Base implementation for hashers externalities.
+#[cfg(feature = "full_crypto")]
+#[derive(Default, Clone)]
+pub struct HashersExternalities(Vec<Option<Hash32State>>);
+
+#[cfg(feature = "std")]
+impl std::fmt::Debug for HashersExternalities {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("HashersExternalies").finish()
+	}
+}
+// TODO u32 in opaque non copyiable clonable type: similar to the property
+// of Hash32State.
+#[cfg(feature = "full_crypto")]
+impl HashersExternalities {
+	/// Get hasher state handle initiated with given data.
+	/// See sp_io::hashing::get_hasher.
+	pub fn get_hasher(&mut self, algorithm: Hash32Algorithm) -> Option<HasherHandle> {
+		if self.0.len() == u32::MAX as usize {
+			return None
+		}
+		self.0.push(Some(Hash32State::new(algorithm)));
+		// No safe constructor here, trying to keep type opaque as possible.
+		Some(unsafe { sp_std::mem::transmute(self.0.len() as u32 - 1) })
+	}
+
+	/// Drop a given hasher instance.
+	/// If hasher handle is undefined, all hashers instance
+	/// will be drop.
+	pub fn drop_hasher(&mut self, hasher: Option<HasherHandle>) {
+		if let Some(ix) = hasher {
+			let ix: u32 = unsafe { sp_std::mem::transmute(ix) };
+			if let Some(hasher) = self.0.get_mut(ix as usize) {
+				*hasher = None;
+				for i in (0..self.0.len()).rev() {
+					if self.0[i].is_none() {
+						let _ = self.0.pop();
+					}
+				}
+			}
+		} else {
+			self.0.clear();
+		}
+	}
+
+	/// Update hashing with given data.
+	/// Return true if successful.
+	/// Return false if missing hasher.
+	pub fn hasher_update(&mut self, handle: HasherHandle, data: &[u8]) -> bool {
+		let handle: u32 = unsafe { sp_std::mem::transmute(handle) };
+		if let Some(Some(hasher)) = self.0.get_mut(handle as usize) {
+			hasher.update(data);
+			true
+		} else {
+			false
+		}
+	}
+
+	/// Finalize hashing, dropping the stored hasher and returning
+	/// the resulting hash if successful.
+	/// Return None if missing hasher.
+	pub fn hasher_finalize(&mut self, handle: HasherHandle) -> Option<[u8; 32]> {
+		let handle: u32 = unsafe { sp_std::mem::transmute(handle) };
+		if let Some(hasher) = self.0.get_mut(handle as usize).and_then(Option::take) {
+			let hash = hasher.finalize();
+			for i in (0..self.0.len()).rev() {
+				if self.0[i].is_none() {
+					let _ = self.0.pop();
+				}
+			}
+			Some(hash)
+		} else {
+			None
+		}
+	}
+}
+
 /// Generates a macro for checking if a certain feature is enabled.
 ///
 /// These feature checking macros can be used to conditionally enable/disable code in a dependent

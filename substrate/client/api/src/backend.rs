@@ -29,8 +29,8 @@ use sp_runtime::{
 	Justification, Justifications, StateVersion, Storage,
 };
 use sp_state_machine::{
-	backend::AsTrieBackend, ChildStorageCollection, IndexOperation, IterArgs,
-	OffchainChangesCollection, StorageCollection, StorageIterator,
+	backend::AsTrieBackend, BlobsCollection, ChildStorageCollection, IndexOperation, IterArgs,
+	OffchainChangesCollection, OrdMapsCollection, StorageCollection, StorageIterator,
 };
 use sp_storage::{ChildInfo, StorageData, StorageKey};
 
@@ -68,7 +68,9 @@ pub struct ImportSummary<Block: BlockT> {
 	/// Is this block a new best block.
 	pub is_new_best: bool,
 	/// Optional storage changes.
-	pub storage_changes: Option<(StorageCollection, ChildStorageCollection)>,
+	/// Mainly use for notification.
+	pub storage_changes:
+		Option<(StorageCollection, ChildStorageCollection, OrdMapsCollection, BlobsCollection)>,
 	/// Tree route from old best to new best.
 	///
 	/// If `None`, there was no re-org while importing.
@@ -199,6 +201,8 @@ pub trait BlockImportOperation<Block: BlockT> {
 		&mut self,
 		update: StorageCollection,
 		child_update: ChildStorageCollection,
+		btrees_update: OrdMapsCollection,
+		blobs_update: BlobsCollection,
 	) -> sp_blockchain::Result<()>;
 
 	/// Write offchain storage changes to the database.

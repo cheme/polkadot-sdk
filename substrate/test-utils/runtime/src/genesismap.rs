@@ -24,7 +24,7 @@ use codec::Encode;
 use sc_service::construct_genesis_block;
 use sp_core::{
 	sr25519,
-	storage::{well_known_keys, StateVersion, Storage},
+	storage::{well_known_keys, ChildType, StateVersion, Storage},
 	Pair,
 };
 use sp_keyring::{AccountKeyring, Sr25519Keyring};
@@ -157,16 +157,33 @@ impl GenesisStorageBuilder {
 }
 
 pub fn insert_genesis_block(storage: &mut Storage) -> sp_core::hash::H256 {
-	let child_roots = storage.children_default.iter().map(|(sk, child_content)| {
+	let child_roots = storage.children_default.iter().map(|(_sk, child_content)| {
 		let state_root =
 			<<<crate::Block as BlockT>::Header as HeaderT>::Hashing as HashT>::trie_root(
 				child_content.data.clone().into_iter().collect(),
 				sp_runtime::StateVersion::V1,
 			);
-		(sk.clone(), state_root.encode())
+		let prefixed_storage_key = ChildType::Default.new_prefixed_key(&child_content.info.name);
+		(prefixed_storage_key.into_inner(), state_root.encode())
 	});
 	// add child roots to storage
 	storage.top.extend(child_roots);
+	let child_roots = storage.ordered_map_storages.iter().map(|(_sk, _child_content)| {
+		unimplemented!(
+			"TODO add fn trie_root_dummy to runtime/src/traits, would mean
+		another two host function"
+		);
+		/*		let state_root =
+			<<<crate::Block as BlockT>::Header as HeaderT>::Hashing as HashT>::trie_root_dummy(
+				child_content.data.clone().into_iter().collect(),
+				sp_runtime::StateVersion::V1,
+			);
+		let prefixed_storage_key = child_content.child_info.prefixed_storage_key();
+		(prefixed_storage_key.into_inner(), state_root.encode())*/
+	});
+	// add child roots to storage
+	storage.top.extend(child_roots);
+
 	let state_root = <<<crate::Block as BlockT>::Header as HeaderT>::Hashing as HashT>::trie_root(
 		storage.top.clone().into_iter().collect(),
 		sp_runtime::StateVersion::V1,

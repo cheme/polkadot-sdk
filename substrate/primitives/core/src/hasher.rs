@@ -31,8 +31,8 @@ pub mod blake2 {
 		type StdHasher = Hash256StdHasher;
 		const LENGTH: usize = 32;
 
-		fn hash(x: &[u8]) -> Self::Out {
-			crate::hashing::blake2_256(x).into()
+		fn hash(data: &[u8]) -> Self::Out {
+			crate::hashing::blake2_256(data).into()
 		}
 	}
 }
@@ -51,8 +51,8 @@ pub mod keccak {
 		type StdHasher = Hash256StdHasher;
 		const LENGTH: usize = 32;
 
-		fn hash(x: &[u8]) -> Self::Out {
-			crate::hashing::keccak_256(x).into()
+		fn hash(data: &[u8]) -> Self::Out {
+			crate::hashing::keccak_256(data).into()
 		}
 	}
 }

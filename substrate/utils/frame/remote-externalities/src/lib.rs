@@ -34,7 +34,7 @@ use sp_core::{
 	hexdisplay::HexDisplay,
 	storage::{
 		well_known_keys::{is_default_child_storage_key, DEFAULT_CHILD_STORAGE_KEY_PREFIX},
-		ChildInfo, ChildType, PrefixedStorageKey, StorageData, StorageKey,
+		ChildType, DefaultChild, PrefixedStorageKey, StorageData, StorageKey,
 	},
 };
 use sp_runtime::{
@@ -55,7 +55,7 @@ use tokio_retry::{strategy::FixedInterval, Retry};
 
 type KeyValue = (StorageKey, StorageData);
 type TopKeyValues = Vec<KeyValue>;
-type ChildKeyValues = Vec<(ChildInfo, Vec<KeyValue>)>;
+type ChildKeyValues = Vec<(DefaultChild, Vec<KeyValue>)>;
 type SnapshotVersion = Compact<u16>;
 
 const LOG_TARGET: &str = "remote-ext";
@@ -794,14 +794,22 @@ where
 
 			let prefixed_top_key = PrefixedStorageKey::new(prefixed_top_key.clone().0);
 			let un_prefixed = match ChildType::from_prefixed_key(&prefixed_top_key) {
-				Some((ChildType::ParentKeyId, storage_key)) => storage_key,
+				Some((ChildType::Default, storage_key)) => storage_key,
+				Some((ChildType::OrderedMap, _storage_key)) => {
+					// transient, nothing to add.
+					continue
+				},
+				Some((ChildType::Blob, _storage_key)) => {
+					// transient, nothing to add.
+					continue
+				},
 				None => {
 					log::error!(target: LOG_TARGET, "invalid key: {:?}", prefixed_top_key);
 					return Err("Invalid child key")
 				},
 			};
 
-			let info = ChildInfo::new_default(un_prefixed);
+			let info = DefaultChild::new(un_prefixed);
 			let key_values =
 				child_kv_inner.iter().cloned().map(|(k, v)| (k.0, v.0)).collect::<Vec<_>>();
 			child_kv.push((info.clone(), child_kv_inner));

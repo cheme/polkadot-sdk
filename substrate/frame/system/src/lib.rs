@@ -692,7 +692,13 @@ pub mod pallet {
 			<UpgradedToTripleRefCount<T>>::put(true);
 
 			sp_io::storage::set(well_known_keys::CODE, &self.code);
-			sp_io::storage::set(well_known_keys::EXTRINSIC_INDEX, &0u32.encode());
+			sp_io::storage::set(well_known_keys::EXTRINSIC_INDEX, &0u32.encode()); // TODO rem this
+			                                                           // (but at this
+			                                                           // point very
+			                                                           // noisy (change
+			                                                           // hardcoded
+			                                                           // roots in
+			                                                           // tests).
 		}
 	}
 }
@@ -1339,7 +1345,10 @@ impl<T: Config> Pallet<T> {
 
 	/// Gets the index of extrinsic that is currently executing.
 	pub fn extrinsic_index() -> Option<u32> {
-		storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX)
+		let index2 = storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX);
+		let index = Some(frame_support::storage::get_global_extrinsic_count());
+		assert!(index == index2, "Extrinsic index mismatch3");
+		index2
 	}
 
 	/// Gets extrinsics count.
@@ -1376,9 +1385,11 @@ impl<T: Config> Pallet<T> {
 	pub fn initialize(number: &BlockNumberFor<T>, parent_hash: &T::Hash, digest: &generic::Digest) {
 		// populate environment
 		ExecutionPhase::<T>::put(Phase::Initialization);
-		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &0u32);
+		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &0u32); // TODO rem (but noisy at
+																 // this point).
 		let entropy = (b"frame_system::initialize", parent_hash).using_encoded(blake2_256);
 		storage::unhashed::put_raw(well_known_keys::INTRABLOCK_ENTROPY, &entropy[..]);
+		frame_support::storage::set_global_extrinsic_count(0u32);
 		<Number<T>>::put(number);
 		<Digest<T>>::put(digest);
 		<ParentHash<T>>::put(parent_hash);
@@ -1444,9 +1455,10 @@ impl<T: Config> Pallet<T> {
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
 
-		let extrinsics = (0..ExtrinsicCount::<T>::take().unwrap_or_default())
-			.map(ExtrinsicData::<T>::take)
-			.collect();
+		let count2 = frame_support::storage::get_global_extrinsic_count();
+		let count = ExtrinsicCount::<T>::take().unwrap_or_default(); // TODO rem but remove matters here
+		assert!(count == count2, "Extrinsic index mismatch2");
+		let extrinsics = (0..count).map(ExtrinsicData::<T>::take).collect();
 		let extrinsics_root = extrinsics_data_root::<T::Hashing>(extrinsics);
 
 		// move block hash pruning window by one block
@@ -1480,6 +1492,8 @@ impl<T: Config> Pallet<T> {
 				<ParentHash<T>>::hashed_key().to_vec() => [69u8; 32].encode()
 			],
 			children_default: map![],
+			ordered_map_storages: map![],
+			blob_storages: map![],
 		})
 	}
 
@@ -1528,6 +1542,7 @@ impl<T: Config> Pallet<T> {
 	/// Sets the index of extrinsic that is currently executing.
 	#[cfg(any(feature = "std", test))]
 	pub fn set_extrinsic_index(extrinsic_index: u32) {
+		frame_support::storage::set_global_extrinsic_count(extrinsic_index);
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &extrinsic_index)
 	}
 
@@ -1629,6 +1644,7 @@ impl<T: Config> Pallet<T> {
 
 		let next_extrinsic_index = Self::extrinsic_index().unwrap_or_default() + 1u32;
 
+		frame_support::storage::set_global_extrinsic_count(next_extrinsic_index);
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &next_extrinsic_index);
 		ExecutionPhase::<T>::put(Phase::ApplyExtrinsic(next_extrinsic_index));
 	}
@@ -1638,6 +1654,8 @@ impl<T: Config> Pallet<T> {
 	pub fn note_finished_extrinsics() {
 		let extrinsic_index: u32 =
 			storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
+		let extrinsic_index2: u32 = frame_support::storage::get_global_extrinsic_count();
+		assert!(extrinsic_index == extrinsic_index2, "Extrinsic index mismatch");
 		ExtrinsicCount::<T>::put(extrinsic_index);
 		ExecutionPhase::<T>::put(Phase::Finalization);
 	}

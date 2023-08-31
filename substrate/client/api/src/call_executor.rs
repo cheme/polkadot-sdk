@@ -22,7 +22,7 @@ use sc_executor::{RuntimeVersion, RuntimeVersionOf};
 use sp_core::traits::CallContext;
 use sp_externalities::Extensions;
 use sp_runtime::traits::Block as BlockT;
-use sp_state_machine::{OverlayedChanges, StorageProof};
+use sp_state_machine::{Changes, StorageProof};
 use std::cell::RefCell;
 
 use crate::execution_extensions::ExecutionExtensions;
@@ -72,7 +72,7 @@ pub trait CallExecutor<B: BlockT>: RuntimeVersionOf {
 		at_hash: B::Hash,
 		method: &str,
 		call_data: &[u8],
-		changes: &RefCell<OverlayedChanges<HashingFor<B>>>,
+		changes: &RefCell<Changes<HashingFor<B>>>,
 		proof_recorder: &Option<ProofRecorder<B>>,
 		call_context: CallContext,
 		extensions: &RefCell<Extensions>,

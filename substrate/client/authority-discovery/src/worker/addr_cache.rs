@@ -133,7 +133,7 @@ impl AddrCache {
 	/// Removes all [`PeerId`]s and [`Multiaddr`]s from the cache that are not related to the given
 	/// [`AuthorityId`]s.
 	pub fn retain_ids(&mut self, authority_ids: &[AuthorityId]) {
-		// The below logic could be replaced by `BtreeMap::drain_filter` once it stabilized.
+		// The below logic could be replaced by `BTreeMap::drain_filter` once it stabilized.
 		let authority_ids_to_remove = self
 			.authority_id_to_addresses
 			.iter()

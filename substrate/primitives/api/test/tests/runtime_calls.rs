@@ -20,7 +20,7 @@ use std::panic::UnwindSafe;
 use sp_api::{ApiExt, Core, ProvideRuntimeApi};
 use sp_runtime::{
 	traits::{HashingFor, Header as HeaderT},
-	TransactionOutcome,
+	IoHashers, TransactionOutcome,
 };
 use sp_state_machine::{create_proof_check_backend, execution_proof_check_on_trie_backend};
 
@@ -122,7 +122,7 @@ fn record_proof_works() {
 	let executor = NativeElseWasmExecutor::<LocalExecutorDispatch>::new_with_wasm_executor(
 		WasmExecutor::builder().build(),
 	);
-	execution_proof_check_on_trie_backend(
+	execution_proof_check_on_trie_backend::<_, IoHashers, _>(
 		&backend,
 		&mut overlay,
 		&executor,

@@ -101,8 +101,11 @@ use sp_core::{
 		HttpError, HttpRequestId, HttpRequestStatus, OpaqueNetworkState, StorageKind, Timestamp,
 	},
 	sr25519,
-	storage::StateVersion,
-	LogLevel, LogLevelFilter, OpaquePeerId, H256,
+	storage::{
+		transient::{Hash32Algorithm, Root32Structure},
+		StateVersion,
+	},
+	HasherHandle, LogLevel, LogLevelFilter, OpaquePeerId, H256,
 };
 
 #[cfg(feature = "bls-experimental")]
@@ -171,8 +174,8 @@ impl From<MultiRemovalResults> for KillStorageResult {
 #[runtime_interface]
 pub trait Storage {
 	/// Returns the data for `key` in the storage or `None` if the key can not be found.
-	fn get(&self, key: &[u8]) -> Option<bytes::Bytes> {
-		self.storage(key).map(|s| bytes::Bytes::from(s.to_vec()))
+	fn get(&mut self, key: &[u8]) -> Option<bytes::Bytes> {
+		self.storage(key, 0, None).map(|value| value.into_owned().into())
 	}
 
 	/// Get `key` from storage, placing the value into `value_out` and return the number of
@@ -180,13 +183,11 @@ pub trait Storage {
 	/// doesn't exist at all.
 	/// If `value_out` length is smaller than the returned length, only `value_out` length bytes
 	/// are copied into `value_out`.
-	fn read(&self, key: &[u8], value_out: &mut [u8], value_offset: u32) -> Option<u32> {
-		self.storage(key).map(|value| {
-			let value_offset = value_offset as usize;
-			let data = &value[value_offset.min(value.len())..];
-			let written = std::cmp::min(data.len(), value_out.len());
-			value_out[..written].copy_from_slice(&data[..written]);
-			data.len() as u32
+	fn read(&mut self, key: &[u8], value_out: &mut [u8], value_offset: u32) -> Option<u32> {
+		self.storage(key, value_offset, None).map(|value| {
+			let written = std::cmp::min(value.len(), value_out.len());
+			value_out[..written].copy_from_slice(&value[..written]);
+			value.len() as u32
 		})
 	}
 
@@ -201,7 +202,7 @@ pub trait Storage {
 	}
 
 	/// Check whether the given `key` exists in storage.
-	fn exists(&self, key: &[u8]) -> bool {
+	fn exists(&mut self, key: &[u8]) -> bool {
 		self.exists_storage(key)
 	}
 
@@ -377,9 +378,10 @@ pub trait DefaultChildStorage {
 	///
 	/// Parameter `storage_key` is the unprefixed location of the root of the child trie in the
 	/// parent trie. Result is `None` if the value for `key` in the child storage can not be found.
-	fn get(&self, storage_key: &[u8], key: &[u8]) -> Option<Vec<u8>> {
+	fn get(&mut self, storage_key: &[u8], key: &[u8]) -> Option<bytes::Bytes> {
 		let child_info = ChildInfo::new_default(storage_key);
-		self.child_storage(&child_info, key).map(|s| s.to_vec())
+		self.child_storage(&child_info, key, 0, None)
+			.map(|value| value.into_owned().into())
 	}
 
 	/// Allocation efficient variant of `get`.
@@ -390,19 +392,17 @@ pub trait DefaultChildStorage {
 	/// If `value_out` length is smaller than the returned length, only `value_out` length bytes
 	/// are copied into `value_out`.
 	fn read(
-		&self,
+		&mut self,
 		storage_key: &[u8],
 		key: &[u8],
 		value_out: &mut [u8],
 		value_offset: u32,
 	) -> Option<u32> {
 		let child_info = ChildInfo::new_default(storage_key);
-		self.child_storage(&child_info, key).map(|value| {
-			let value_offset = value_offset as usize;
-			let data = &value[value_offset.min(value.len())..];
-			let written = std::cmp::min(data.len(), value_out.len());
-			value_out[..written].copy_from_slice(&data[..written]);
-			data.len() as u32
+		self.child_storage(&child_info, key, value_offset, None).map(|value| {
+			let written = std::cmp::min(value.len(), value_out.len());
+			value_out[..written].copy_from_slice(&value[..written]);
+			value.len() as u32
 		})
 	}
 
@@ -411,7 +411,7 @@ pub trait DefaultChildStorage {
 	/// Set `key` to `value` in the child storage denoted by `storage_key`.
 	fn set(&mut self, storage_key: &[u8], key: &[u8], value: &[u8]) {
 		let child_info = ChildInfo::new_default(storage_key);
-		self.set_child_storage(&child_info, key.to_vec(), value.to_vec());
+		self.set_child_storage(&child_info, key, value);
 	}
 
 	/// Clear a child storage key.
@@ -468,7 +468,7 @@ pub trait DefaultChildStorage {
 	/// Check a child storage key.
 	///
 	/// Check whether the given `key` exists in default child defined at `storage_key`.
-	fn exists(&self, storage_key: &[u8], key: &[u8]) -> bool {
+	fn exists(&mut self, storage_key: &[u8], key: &[u8]) -> bool {
 		let child_info = ChildInfo::new_default(storage_key);
 		self.exists_child_storage(&child_info, key)
 	}
@@ -525,6 +525,7 @@ pub trait DefaultChildStorage {
 	fn root(&mut self, storage_key: &[u8]) -> Vec<u8> {
 		let child_info = ChildInfo::new_default(storage_key);
 		self.child_storage_root(&child_info, StateVersion::V0)
+			.expect("Root always calculated for default storage.")
 	}
 
 	/// Default child root calculation.
@@ -537,6 +538,7 @@ pub trait DefaultChildStorage {
 	fn root(&mut self, storage_key: &[u8], version: StateVersion) -> Vec<u8> {
 		let child_info = ChildInfo::new_default(storage_key);
 		self.child_storage_root(&child_info, version)
+			.expect("Root always calculated for default storage.")
 	}
 
 	/// Child storage key iteration.
@@ -544,7 +546,8 @@ pub trait DefaultChildStorage {
 	/// Get the next key in storage after the given one in lexicographic order in child storage.
 	fn next_key(&mut self, storage_key: &[u8], key: &[u8]) -> Option<Vec<u8>> {
 		let child_info = ChildInfo::new_default(storage_key);
-		self.next_child_storage_key(&child_info, key)
+		self.next_child_storage_key(&child_info, key, 1)
+			.and_then(|mut nexts| nexts.get_mut(0).map(|v| sp_std::mem::take(v)))
 	}
 }
 
@@ -679,6 +682,34 @@ pub trait Trie {
 			>(&root, proof, &[(key, Some(value))])
 			.is_ok(),
 		}
+	}
+}
+
+/// Interface that provides transient blob related functionality.
+#[runtime_interface]
+pub trait BlobStorage {
+	/// Put a chunk to be archive.
+	fn archive_chunk(&mut self, name: &[u8], chunk: &[u8]) {
+		self.blob_archive_chunk(name, chunk);
+	}
+
+	/// Put a blob hash to be archive.
+	fn archive_hash(&mut self, name: &[u8], hash: &[u8], algo: Crossing<Hash32Algorithm>) {
+		self.blob_archive_hash(name, hash, algo.0);
+	}
+}
+
+/// Interface for transient ordered map storage.
+#[runtime_interface]
+pub trait OrderedMapStorage {
+	/// Put a map key value to be archive.
+	fn archive_item(&mut self, name: &[u8], key: &[u8], value: &[u8]) {
+		self.map_archive_item(name, key, value);
+	}
+
+	/// Put a map root to be archive.
+	fn archive_root(&mut self, name: &[u8], root: &[u8], structure: Crossing<Root32Structure>) {
+		self.map_archive_root(name, root, structure.0);
 	}
 }
 
@@ -1269,6 +1300,42 @@ pub trait Hashing {
 	fn twox_64(data: &[u8]) -> [u8; 8] {
 		sp_core::hashing::twox_64(data)
 	}
+
+	/// Get hasher state handle.
+	/// Handle indice is current bigger handle + 1 for
+	/// a new handle. Only u32 max value hashers are allowed to
+	/// run, if next handle can go other this limit, the function
+	/// returns None.
+	/// It is highly unrecommended to never read the handle
+	/// value in a runtime (the value will differ depending on execution
+	/// context (single extrinsic, block processing...)).
+	/// Runtime should also be discourage to keep runtime open.
+	/// TODO limit less than u32, parallel hashing should be rather rare.
+	/// TODO make handle non debug non clone non copy (in a struct)
+	fn get_hasher(&mut self, algorithm: Crossing<Hash32Algorithm>) -> Option<HasherHandle> {
+		self.get_hasher(algorithm.0)
+	}
+
+	/// Drop a given hasher instance.
+	/// If hasher handle is undefined, all hashers instance
+	/// will be drop.
+	fn drop_hasher(&mut self, hasher: Option<HasherHandle>) {
+		self.drop_hasher(hasher)
+	}
+
+	/// Update hashing with given data.
+	/// Return true if successful.
+	/// Return false if missing hasher.
+	fn hasher_update(&mut self, hasher: HasherHandle, data: &[u8]) -> bool {
+		self.hasher_update(hasher, data)
+	}
+
+	/// Finalize hashing, dropping the stored hasher and returning
+	/// the resulting hash if successful.
+	/// Return None if missing hasher.
+	fn hasher_finalize(&mut self, hasher: HasherHandle) -> Option<[u8; 32]> {
+		self.hasher_finalize(hasher)
+	}
 }
 
 /// Interface that provides transaction indexing API.
@@ -1583,6 +1650,12 @@ impl<T: Encode + Decode> PassBy for Crossing<T> {
 	type PassBy = sp_runtime_interface::pass_by::Codec<Self>;
 }
 
+impl<T: Encode + Decode> From<T> for Crossing<T> {
+	fn from(t: T) -> Crossing<T> {
+		Crossing(t)
+	}
+}
+
 impl<T: Encode + Decode> Crossing<T> {
 	/// Convert into the inner type
 	pub fn into_inner(self) -> T {
@@ -1785,6 +1858,8 @@ pub type TestExternalities = sp_state_machine::TestExternalities<sp_core::Blake2
 pub type SubstrateHostFunctions = (
 	storage::HostFunctions,
 	default_child_storage::HostFunctions,
+	blob_storage::HostFunctions,
+	ordered_map_storage::HostFunctions,
 	misc::HostFunctions,
 	wasm_tracing::HostFunctions,
 	offchain::HostFunctions,
@@ -1818,6 +1893,8 @@ mod tests {
 		t = BasicExternalities::new(Storage {
 			top: map![b"foo".to_vec() => b"bar".to_vec()],
 			children_default: map![],
+			ordered_map_storages: map![],
+			blob_storages: map![],
 		});
 
 		t.execute_with(|| {
@@ -1826,8 +1903,12 @@ mod tests {
 		});
 
 		let value = vec![7u8; 35];
-		let storage =
-			Storage { top: map![b"foo00".to_vec() => value.clone()], children_default: map![] };
+		let storage = Storage {
+			top: map![b"foo00".to_vec() => value.clone()],
+			children_default: map![],
+			ordered_map_storages: map![],
+			blob_storages: map![],
+		};
 		t = BasicExternalities::new(storage);
 
 		t.execute_with(|| {
@@ -1842,6 +1923,8 @@ mod tests {
 		let mut t = BasicExternalities::new(Storage {
 			top: map![b":test".to_vec() => value.clone()],
 			children_default: map![],
+			ordered_map_storages: map![],
+			blob_storages: map![],
 		});
 
 		t.execute_with(|| {
@@ -1864,6 +1947,8 @@ mod tests {
 				b":abdd".to_vec() => b"\x0b\0\0\0Hello world".to_vec()
 			],
 			children_default: map![],
+			ordered_map_storages: map![],
+			blob_storages: map![],
 		});
 
 		t.execute_with(|| {

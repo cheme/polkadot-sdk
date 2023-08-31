@@ -26,7 +26,6 @@
 //!
 //! [`with_transaction`] provides a way to run a given closure in a transactional context.
 
-use sp_io::storage::{commit_transaction, rollback_transaction, start_transaction};
 use sp_runtime::{DispatchError, TransactionOutcome, TransactionalError};
 
 /// The type that is being used to store the current number of active layers.
@@ -40,6 +39,7 @@ pub const TRANSACTIONAL_LIMIT: Layer = 255;
 
 /// Returns the current number of nested transactional layers.
 fn get_transaction_level() -> Layer {
+	// TODO put in global variable.
 	crate::storage::unhashed::get_or_default::<Layer>(TRANSACTION_LEVEL_KEY)
 }
 
@@ -92,6 +92,30 @@ impl Drop for StorageLayerGuard {
 /// Check if the current call is within a transactional layer.
 pub fn is_transactional() -> bool {
 	get_transaction_level() > 0
+}
+
+/// Runtime commit transaction first access.
+/// This should always be call instead of direct `sp_io::storage::commit_transaction`
+/// call, as it will also handle wasm global/local transactional data.
+pub fn commit_transaction() {
+	sp_io::storage::commit_transaction();
+	crate::storage::transient_commit_transaction();
+}
+
+/// Runtime commit transaction first access.
+/// This should always be call instead of direct `sp_io::storage::commit_transaction`
+/// call, as it will also handle wasm global/local transactional data.
+pub fn rollback_transaction() {
+	sp_io::storage::rollback_transaction();
+	crate::storage::transient_rollback_transaction();
+}
+
+/// Runtime commit transaction first access.
+/// This should always be call instead of direct `sp_io::storage::commit_transaction`
+/// call, as it will also handle wasm global/local transactional data.
+pub fn start_transaction() {
+	sp_io::storage::start_transaction();
+	crate::storage::transient_start_transaction();
 }
 
 /// Execute the supplied function in a new storage transaction.

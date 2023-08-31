@@ -77,6 +77,7 @@ members = [
 	"client/consensus/pow",
 	"client/consensus/slots",
 	"client/db",
+	"client/db/example-plugin",
 	"client/executor",
 	"client/executor/common",
 	"client/executor/runtime-test",
@@ -388,3 +389,7 @@ inherits = "release"
 lto = "fat"
 # https://doc.rust-lang.org/rustc/codegen-options/index.html#codegen-units
 codegen-units = 1
+
+[patch.crates-io]
+environmental = { git = "https://github.com/cheme/environmental", branch = "init_default" }
+#environmental = { path = "/home/emeric/work/ssd/environmental" }

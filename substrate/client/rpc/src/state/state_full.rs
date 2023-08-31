@@ -415,13 +415,18 @@ where
 	}
 
 	fn subscribe_storage(&self, mut sink: SubscriptionSink, keys: Option<Vec<StorageKey>>) {
-		let stream = match self.client.storage_changes_notification_stream(keys.as_deref(), None) {
-			Ok(stream) => stream,
-			Err(blockchain_err) => {
-				let _ = sink.reject(JsonRpseeError::from(Error::Client(Box::new(blockchain_err))));
-				return
-			},
-		};
+		let stream =
+			match self
+				.client
+				.storage_changes_notification_stream(keys.as_deref(), None, None, None)
+			{
+				Ok(stream) => stream,
+				Err(blockchain_err) => {
+					let _ =
+						sink.reject(JsonRpseeError::from(Error::Client(Box::new(blockchain_err))));
+					return
+				},
+			};
 
 		// initial values
 		let initial = stream::iter(keys.map(|keys| {
@@ -437,13 +442,16 @@ where
 		}));
 
 		// let storage_stream = stream.map(|(block, changes)| StorageChangeSet {
-		let storage_stream = stream.map(|storage_notif| StorageChangeSet {
-			block: storage_notif.block,
-			changes: storage_notif
-				.changes
-				.iter()
-				.filter_map(|(o_sk, k, v)| o_sk.is_none().then(|| (k.clone(), v.cloned())))
-				.collect(),
+		let storage_stream = stream.map(|storage_notif| {
+			// TODO stream with notif for changes and blob: requires some format change.
+			let (changes_iter, _changes_btree_iter, _changes_blob_iter) =
+				storage_notif.changes.iter();
+			StorageChangeSet {
+				block: storage_notif.block,
+				changes: changes_iter
+					.filter_map(|(o_sk, k, v)| o_sk.is_none().then(|| (k.clone(), v.cloned())))
+					.collect(),
+			}
 		});
 
 		let stream = initial
@@ -503,9 +511,9 @@ where
 		self.block_or_best(block)
 			.and_then(|block| {
 				let child_info = match ChildType::from_prefixed_key(&storage_key) {
-					Some((ChildType::ParentKeyId, storage_key)) =>
-						ChildInfo::new_default(storage_key),
-					None => return Err(sp_blockchain::Error::InvalidChildStorageKey),
+					Some((ChildType::Default, storage_key)) => ChildInfo::new_default(storage_key),
+					Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+						return Err(sp_blockchain::Error::InvalidChildStorageKey),
 				};
 				self.client
 					.read_child_proof(
@@ -529,9 +537,9 @@ where
 		self.block_or_best(block)
 			.and_then(|block| {
 				let child_info = match ChildType::from_prefixed_key(&storage_key) {
-					Some((ChildType::ParentKeyId, storage_key)) =>
-						ChildInfo::new_default(storage_key),
-					None => return Err(sp_blockchain::Error::InvalidChildStorageKey),
+					Some((ChildType::Default, storage_key)) => ChildInfo::new_default(storage_key),
+					Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+						return Err(sp_blockchain::Error::InvalidChildStorageKey),
 				};
 				self.client.child_storage_keys(block, child_info, Some(&prefix), None)
 			})
@@ -550,9 +558,9 @@ where
 		self.block_or_best(block)
 			.and_then(|block| {
 				let child_info = match ChildType::from_prefixed_key(&storage_key) {
-					Some((ChildType::ParentKeyId, storage_key)) =>
-						ChildInfo::new_default(storage_key),
-					None => return Err(sp_blockchain::Error::InvalidChildStorageKey),
+					Some((ChildType::Default, storage_key)) => ChildInfo::new_default(storage_key),
+					Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+						return Err(sp_blockchain::Error::InvalidChildStorageKey),
 				};
 				self.client.child_storage_keys(
 					block,
@@ -574,9 +582,9 @@ where
 		self.block_or_best(block)
 			.and_then(|block| {
 				let child_info = match ChildType::from_prefixed_key(&storage_key) {
-					Some((ChildType::ParentKeyId, storage_key)) =>
-						ChildInfo::new_default(storage_key),
-					None => return Err(sp_blockchain::Error::InvalidChildStorageKey),
+					Some((ChildType::Default, storage_key)) => ChildInfo::new_default(storage_key),
+					Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+						return Err(sp_blockchain::Error::InvalidChildStorageKey),
 				};
 				self.client.child_storage(block, &child_info, &key)
 			})
@@ -589,12 +597,11 @@ where
 		storage_key: PrefixedStorageKey,
 		keys: Vec<StorageKey>,
 	) -> std::result::Result<Vec<Option<StorageData>>, Error> {
-		let child_info = if let Some((ChildType::ParentKeyId, storage_key)) =
-			ChildType::from_prefixed_key(&storage_key)
-		{
-			Arc::new(ChildInfo::new_default(storage_key))
-		} else {
-			return Err(client_err(sp_blockchain::Error::InvalidChildStorageKey))
+		let child_info = match ChildType::from_prefixed_key(&storage_key) {
+			Some((ChildType::Default, storage_key)) =>
+				Arc::new(ChildInfo::new_default(storage_key)),
+			Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+				return Err(client_err(sp_blockchain::Error::InvalidChildStorageKey)),
 		};
 		let block = self.block_or_best(block).map_err(client_err)?;
 		let client = self.client.clone();
@@ -615,9 +622,9 @@ where
 		self.block_or_best(block)
 			.and_then(|block| {
 				let child_info = match ChildType::from_prefixed_key(&storage_key) {
-					Some((ChildType::ParentKeyId, storage_key)) =>
-						ChildInfo::new_default(storage_key),
-					None => return Err(sp_blockchain::Error::InvalidChildStorageKey),
+					Some((ChildType::Default, storage_key)) => ChildInfo::new_default(storage_key),
+					Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+						return Err(sp_blockchain::Error::InvalidChildStorageKey),
 				};
 				self.client.child_storage_hash(block, &child_info, &key)
 			})

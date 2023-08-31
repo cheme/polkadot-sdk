@@ -212,6 +212,8 @@ decl_runtime_apis! {
 		fn test_ecdsa_crypto() -> (ecdsa::AppSignature, ecdsa::AppPublic);
 		/// Run various tests against storage.
 		fn test_storage();
+		/// Run various tests against blob storage.
+		fn test_blob_storage();
 		/// Check a witness.
 		fn test_witness(proof: StorageProof, root: crate::Hash);
 		/// Test that ensures that we can call a function that takes multiple
@@ -448,11 +450,11 @@ fn code_using_trie() -> u64 {
 				return 101
 			}
 		}
-	}
+		t
+	};
 
 	let trie = TrieDBBuilder::<Hashing>::new(&mdb, &root).build();
 	let res = if let Ok(iter) = trie.iter() { iter.flatten().count() as u64 } else { 102 };
-
 	res
 }
 
@@ -591,6 +593,10 @@ impl_runtime_apis! {
 		fn test_storage() {
 			test_read_storage();
 			test_read_child_storage();
+		}
+
+		fn test_blob_storage() {
+			test_read_write_blob_storage();
 		}
 
 		fn test_witness(proof: StorageProof, root: crate::Hash) {
@@ -811,18 +817,46 @@ fn test_read_child_storage() {
 	assert_eq!(&v, &[0, 0, 0, 0]);
 }
 
+fn test_read_write_blob_storage() {
+	use frame_support::storage::child;
+	const STORAGE_KEY: &[u8] = b"blob_unique_id_1";
+	let child_info = sp_core::storage::ChildInfo::new_blob(
+		STORAGE_KEY,
+		Some(sp_core::storage::transient::Mode::Drop),
+		Some(sp_core::storage::transient::Hash32Algorithm::Blake2b256),
+	);
+	let init: Option<u64> = child::read_blob(&child_info, 8, 0);
+	assert_eq!(init, None);
+	child::push(&child_info, &1u64);
+	let init = child::read_blob(&child_info, 8, 0);
+	assert_eq!(init, Some(1u64));
+	let init: Option<u64> = child::read_blob(&child_info, 8, 1);
+	assert_eq!(init, None);
+
+	sp_io::storage::start_transaction();
+	child::push(&child_info, &2u64);
+	child::push(&child_info, &3u64);
+	let init = child::read_blob(&child_info, 8, 2);
+	assert_eq!(init, Some(3u64));
+	sp_io::storage::rollback_transaction();
+
+	let init: Option<u64> = child::read_blob(&child_info, 8, 1);
+	assert_eq!(init, None);
+	child::root(&child_info, Default::default());
+}
+
 fn test_witness(proof: StorageProof, root: crate::Hash) {
 	use sp_externalities::Externalities;
 	let db: sp_trie::MemoryDB<crate::Hashing> = proof.into_memory_db();
 	let backend = sp_state_machine::TrieBackendBuilder::<_, crate::Hashing>::new(db, root).build();
-	let mut overlay = sp_state_machine::OverlayedChanges::default();
-	let mut ext = sp_state_machine::Ext::new(
+	let mut overlay = sp_state_machine::Changes::default();
+	let mut ext = sp_state_machine::Ext::<_, frame_support::storage::IoHashers, _>::new(
 		&mut overlay,
 		&backend,
 		#[cfg(feature = "std")]
 		None,
 	);
-	assert!(ext.storage(b"value3").is_some());
+	assert!(ext.storage(b"value3", 0, None).is_some());
 	assert!(ext.storage_root(Default::default()).as_slice() == &root[..]);
 	ext.place_storage(vec![0], Some(vec![1]));
 	assert!(ext.storage_root(Default::default()).as_slice() != &root[..]);
@@ -1074,6 +1108,16 @@ mod tests {
 		let best_hash = client.chain_info().best_hash;
 
 		runtime_api.test_storage(best_hash).unwrap();
+	}
+
+	#[test]
+	fn test_blob_storage() {
+		// can only run once (update)
+		let client = TestClientBuilder::new().build();
+		let runtime_api = client.runtime_api();
+		let best_hash = client.chain_info().best_hash;
+
+		runtime_api.test_blob_storage(best_hash).unwrap();
 	}
 
 	fn witness_backend() -> (sp_trie::MemoryDB<crate::Hashing>, crate::Hash) {

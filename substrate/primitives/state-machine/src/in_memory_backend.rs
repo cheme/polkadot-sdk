@@ -23,7 +23,7 @@ use crate::{
 };
 use codec::Codec;
 use hash_db::Hasher;
-use sp_core::storage::{ChildInfo, StateVersion, Storage};
+use sp_core::storage::{DefaultChild, StateVersion, Storage};
 use sp_trie::{empty_trie_root, LayoutV1, PrefixedMemoryDB};
 use std::collections::{BTreeMap, HashMap};
 
@@ -42,7 +42,7 @@ where
 	H::Out: Codec + Ord,
 {
 	/// Copy the state, with applied updates
-	pub fn update<T: IntoIterator<Item = (Option<ChildInfo>, StorageCollection)>>(
+	pub fn update<T: IntoIterator<Item = (Option<DefaultChild>, StorageCollection)>>(
 		&self,
 		changes: T,
 		state_version: StateVersion,
@@ -53,7 +53,7 @@ where
 	}
 
 	/// Insert values into backend trie.
-	pub fn insert<T: IntoIterator<Item = (Option<ChildInfo>, StorageCollection)>>(
+	pub fn insert<T: IntoIterator<Item = (Option<DefaultChild>, StorageCollection)>>(
 		&mut self,
 		changes: T,
 		state_version: StateVersion,
@@ -110,14 +110,15 @@ where
 	}
 }
 
-impl<H: Hasher> From<(HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>>, StateVersion)>
+impl<H: Hasher>
+	From<(HashMap<Option<DefaultChild>, BTreeMap<StorageKey, StorageValue>>, StateVersion)>
 	for TrieBackend<PrefixedMemoryDB<H>, H>
 where
 	H::Out: Codec + Ord,
 {
 	fn from(
 		(inner, state_version): (
-			HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>>,
+			HashMap<Option<DefaultChild>, BTreeMap<StorageKey, StorageValue>>,
 			StateVersion,
 		),
 	) -> Self {
@@ -137,11 +138,8 @@ where
 	H::Out: Codec + Ord,
 {
 	fn from((inners, state_version): (Storage, StateVersion)) -> Self {
-		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>> = inners
-			.children_default
-			.into_values()
-			.map(|c| (Some(c.child_info), c.data))
-			.collect();
+		let mut inner: HashMap<Option<DefaultChild>, BTreeMap<StorageKey, StorageValue>> =
+			inners.children_default.into_values().map(|c| (Some(c.info), c.data)).collect();
 		inner.insert(None, inners.top);
 		(inner, state_version).into()
 	}
@@ -159,15 +157,15 @@ where
 	}
 }
 
-impl<H: Hasher> From<(Vec<(Option<ChildInfo>, StorageCollection)>, StateVersion)>
+impl<H: Hasher> From<(Vec<(Option<DefaultChild>, StorageCollection)>, StateVersion)>
 	for TrieBackend<PrefixedMemoryDB<H>, H>
 where
 	H::Out: Codec + Ord,
 {
 	fn from(
-		(inner, state_version): (Vec<(Option<ChildInfo>, StorageCollection)>, StateVersion),
+		(inner, state_version): (Vec<(Option<DefaultChild>, StorageCollection)>, StateVersion),
 	) -> Self {
-		let mut expanded: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>> =
+		let mut expanded: HashMap<Option<DefaultChild>, BTreeMap<StorageKey, StorageValue>> =
 			HashMap::new();
 		for (child_info, key_values) in inner {
 			let entry = expanded.entry(child_info).or_default();
@@ -185,7 +183,7 @@ where
 mod tests {
 	use super::*;
 	use crate::backend::{AsTrieBackend, Backend};
-	use sp_core::storage::StateVersion;
+	use sp_core::storage::{ChildInfo, StateVersion};
 	use sp_runtime::traits::BlakeTwo256;
 
 	/// Assert in memory backend with only child trie keys works as trie backend.
@@ -193,12 +191,14 @@ mod tests {
 	fn in_memory_with_child_trie_only() {
 		let state_version = StateVersion::default();
 		let storage = new_in_mem::<BlakeTwo256>();
-		let child_info = ChildInfo::new_default(b"1");
+		let child_info = DefaultChild::new(b"1");
 		let child_info = &child_info;
 		let storage = storage.update(
 			vec![(Some(child_info.clone()), vec![(b"2".to_vec(), Some(b"3".to_vec()))])],
 			state_version,
 		);
+		let child_info = ChildInfo::Default(child_info.clone());
+		let child_info = &child_info;
 		let trie_backend = storage.as_trie_backend();
 		assert_eq!(trie_backend.child_storage(child_info, b"2").unwrap(), Some(b"3".to_vec()));
 		let storage_key = child_info.prefixed_storage_key();
@@ -209,7 +209,7 @@ mod tests {
 	fn insert_multiple_times_child_data_works() {
 		let state_version = StateVersion::default();
 		let mut storage = new_in_mem::<BlakeTwo256>();
-		let child_info = ChildInfo::new_default(b"1");
+		let child_info = DefaultChild::new(b"1");
 
 		storage.insert(
 			vec![(Some(child_info.clone()), vec![(b"2".to_vec(), Some(b"3".to_vec()))])],
@@ -220,6 +220,8 @@ mod tests {
 			state_version,
 		);
 
+		let child_info = ChildInfo::Default(child_info);
+		let child_info = &child_info;
 		assert_eq!(storage.child_storage(&child_info, &b"2"[..]), Ok(Some(b"3".to_vec())));
 		assert_eq!(storage.child_storage(&child_info, &b"1"[..]), Ok(Some(b"3".to_vec())));
 	}

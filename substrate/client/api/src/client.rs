@@ -80,6 +80,8 @@ pub trait BlockchainEvents<Block: BlockT> {
 		&self,
 		filter_keys: Option<&[StorageKey]>,
 		child_filter_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		btrees_filter_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		blobs_filter_keys: Option<&[StorageKey]>,
 	) -> sp_blockchain::Result<StorageEventStream<Block::Hash>>;
 }
 

@@ -110,6 +110,8 @@ impl<Client> BlockchainEvents<Block> for ChainHeadMockClient<Client> {
 		&self,
 		_filter_keys: Option<&[StorageKey]>,
 		_child_filter_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		_btrees_filter_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		_blobs_filter_keys: Option<&[StorageKey]>,
 	) -> sp_blockchain::Result<StorageEventStream<Hash>> {
 		unimplemented!()
 	}

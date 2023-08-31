@@ -35,9 +35,9 @@ use sp_core::{testing::TaskExecutor, traits::CallContext, H256};
 use sp_runtime::{
 	generic::BlockId,
 	traits::{BlakeTwo256, Block as BlockT, Header as HeaderT},
-	ConsensusEngineId, Justifications, StateVersion,
+	ConsensusEngineId, IoHashers, Justifications, StateVersion,
 };
-use sp_state_machine::{backend::Backend as _, InMemoryBackend, OverlayedChanges, StateMachine};
+use sp_state_machine::{backend::Backend as _, Changes, InMemoryBackend, StateMachine};
 use sp_storage::{ChildInfo, StorageKey};
 use sp_trie::{LayoutV0, TrieConfiguration};
 use std::{collections::HashSet, sync::Arc};
@@ -78,11 +78,11 @@ fn construct_block(
 		digest: Digest { logs: vec![] },
 	};
 	let hash = header.hash();
-	let mut overlay = OverlayedChanges::default();
+	let mut overlay = Changes::default();
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
 
-	StateMachine::new(
+	StateMachine::<_, _, IoHashers, _>::new(
 		backend,
 		&mut overlay,
 		&new_native_or_wasm_executor(),
@@ -96,7 +96,7 @@ fn construct_block(
 	.unwrap();
 
 	for tx in transactions.iter() {
-		StateMachine::new(
+		StateMachine::<_, _, IoHashers, _>::new(
 			backend,
 			&mut overlay,
 			&new_native_or_wasm_executor(),
@@ -110,7 +110,7 @@ fn construct_block(
 		.unwrap();
 	}
 
-	let ret_data = StateMachine::new(
+	let ret_data = StateMachine::<_, _, IoHashers, _>::new(
 		backend,
 		&mut overlay,
 		&new_native_or_wasm_executor(),
@@ -179,9 +179,9 @@ fn construct_genesis_should_work_with_native() {
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
 
-	let mut overlay = OverlayedChanges::default();
+	let mut overlay = Changes::default();
 
-	let _ = StateMachine::new(
+	let _ = StateMachine::<_, _, IoHashers, _>::new(
 		&backend,
 		&mut overlay,
 		&new_native_or_wasm_executor(),
@@ -210,9 +210,9 @@ fn construct_genesis_should_work_with_wasm() {
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
 
-	let mut overlay = OverlayedChanges::default();
+	let mut overlay = Changes::default();
 
-	let _ = StateMachine::new(
+	let _ = StateMachine::<_, _, IoHashers, _>::new(
 		&backend,
 		&mut overlay,
 		&new_native_or_wasm_executor(),

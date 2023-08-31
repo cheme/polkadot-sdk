@@ -27,8 +27,9 @@ use sp_externalities::Extensions;
 use sp_runtime::{
 	generic::BlockId,
 	traits::{Block as BlockT, HashingFor},
+	IoHashers,
 };
-use sp_state_machine::{backend::AsTrieBackend, Ext, OverlayedChanges, StateMachine, StorageProof};
+use sp_state_machine::{backend::AsTrieBackend, Changes, Ext, StateMachine, StorageProof};
 use std::{cell::RefCell, sync::Arc};
 
 /// Call executor that executes methods locally, querying all required
@@ -120,9 +121,9 @@ where
 		code: &RuntimeCode,
 		state: &B::State,
 	) -> sp_blockchain::Result<RuntimeVersion> {
-		let mut overlay = OverlayedChanges::default();
+		let mut overlay = Changes::default();
 
-		let mut ext = Ext::new(&mut overlay, state, None);
+		let mut ext = Ext::<_, IoHashers, _>::new(&mut overlay, state, None);
 
 		self.executor
 			.runtime_version(&mut ext, code)
@@ -166,7 +167,7 @@ where
 		call_data: &[u8],
 		context: CallContext,
 	) -> sp_blockchain::Result<Vec<u8>> {
-		let mut changes = OverlayedChanges::default();
+		let mut changes = Changes::default();
 		let at_number =
 			self.backend.blockchain().expect_block_number_from_id(&BlockId::Hash(at_hash))?;
 		let state = self.backend.state_at(at_hash)?;
@@ -179,7 +180,7 @@ where
 
 		let mut extensions = self.execution_extensions.extensions(at_hash, at_number);
 
-		let mut sm = StateMachine::new(
+		let mut sm = StateMachine::<_, _, IoHashers, _>::new(
 			&state,
 			&mut changes,
 			&self.executor,
@@ -199,7 +200,7 @@ where
 		at_hash: Block::Hash,
 		method: &str,
 		call_data: &[u8],
-		changes: &RefCell<OverlayedChanges<HashingFor<Block>>>,
+		changes: &RefCell<Changes<HashingFor<Block>>>,
 		recorder: &Option<ProofRecorder<Block>>,
 		call_context: CallContext,
 		extensions: &RefCell<Extensions>,
@@ -226,7 +227,7 @@ where
 					.with_recorder(recorder.clone())
 					.build();
 
-				let mut state_machine = StateMachine::new(
+				let mut state_machine = StateMachine::<_, _, IoHashers, _>::new(
 					&backend,
 					changes,
 					&self.executor,
@@ -240,7 +241,7 @@ where
 				state_machine.execute()
 			},
 			None => {
-				let mut state_machine = StateMachine::new(
+				let mut state_machine = StateMachine::<_, _, IoHashers, _>::new(
 					&state,
 					changes,
 					&self.executor,
@@ -283,7 +284,7 @@ where
 			state_runtime_code.runtime_code().map_err(sp_blockchain::Error::RuntimeCode)?;
 		let runtime_code = self.check_override(runtime_code, &state, at_hash)?.0;
 
-		sp_state_machine::prove_execution_on_trie_backend(
+		sp_state_machine::prove_execution_on_trie_backend::<_, _, IoHashers, _>(
 			trie_backend,
 			&mut Default::default(),
 			&self.executor,

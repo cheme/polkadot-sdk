@@ -120,6 +120,7 @@ use codec::{Codec, Encode};
 use frame_support::{
 	dispatch::{DispatchClass, DispatchInfo, GetDispatchInfo, PostDispatchInfo},
 	pallet_prelude::InvalidTransaction,
+	storage::{global_runtime_env_using, GlobalRuntimeContent},
 	traits::{
 		EnsureInherentsAreFirst, ExecuteBlock, OffchainWorker, OnFinalize, OnIdle, OnInitialize,
 		OnRuntimeUpgrade,
@@ -417,6 +418,7 @@ where
 	pub fn initialize_block(header: &frame_system::pallet_prelude::HeaderFor<System>) {
 		sp_io::init_tracing();
 		sp_tracing::enter_span!(sp_tracing::Level::TRACE, "init_block");
+		frame_support::storage::initialize_global_env();
 		let digests = Self::extract_pre_digest(header);
 		Self::initialize_block_impl(header.number(), header.parent_hash(), &digests);
 	}
@@ -496,21 +498,25 @@ where
 	/// Actually execute all transitions for `block`.
 	pub fn execute_block(block: Block) {
 		sp_io::init_tracing();
-		sp_tracing::within_span! {
-			sp_tracing::info_span!("execute_block", ?block);
+		let mut global_var = GlobalRuntimeContent::default();
+		global_runtime_env_using(&mut global_var, || {
+			sp_tracing::within_span! {
+				sp_tracing::info_span!("execute_block", ?block);
+				Self::initialize_block(block.header());
 
-			Self::initialize_block(block.header());
+				// any initial checks
+				Self::initial_checks(&block);
 
-			// any initial checks
-			Self::initial_checks(&block);
+				// execute extrinsics
+				let (header, extrinsics) = block.deconstruct();
+				Self::execute_extrinsics_with_book_keeping(extrinsics, *header.number());
 
-			// execute extrinsics
-			let (header, extrinsics) = block.deconstruct();
-			Self::execute_extrinsics_with_book_keeping(extrinsics, *header.number());
+				// any final checks
+				Self::final_checks(&header);
 
-			// any final checks
-			Self::final_checks(&header);
-		}
+				frame_support::storage::archive_transient_data();
+			}
+		});
 	}
 
 	/// Execute given extrinsics and take care of post-extrinsics book-keeping.
@@ -641,34 +647,38 @@ where
 		sp_io::init_tracing();
 		use sp_tracing::{enter_span, within_span};
 
-		<frame_system::Pallet<System>>::initialize(
-			&(frame_system::Pallet::<System>::block_number() + One::one()),
-			&block_hash,
-			&Default::default(),
-		);
+		let mut global_var = GlobalRuntimeContent::default();
 
-		enter_span! { sp_tracing::Level::TRACE, "validate_transaction" };
+		global_runtime_env_using(&mut global_var, || {
+			<frame_system::Pallet<System>>::initialize(
+				&(frame_system::Pallet::<System>::block_number() + One::one()),
+				&block_hash,
+				&Default::default(),
+			);
 
-		let encoded_len = within_span! { sp_tracing::Level::TRACE, "using_encoded";
-			uxt.using_encoded(|d| d.len())
-		};
+			enter_span! { sp_tracing::Level::TRACE, "validate_transaction" };
 
-		let xt = within_span! { sp_tracing::Level::TRACE, "check";
-			uxt.check(&Default::default())
-		}?;
+			let encoded_len = within_span! { sp_tracing::Level::TRACE, "using_encoded";
+				uxt.using_encoded(|d| d.len())
+			};
 
-		let dispatch_info = within_span! { sp_tracing::Level::TRACE, "dispatch_info";
-			xt.get_dispatch_info()
-		};
+			let xt = within_span! { sp_tracing::Level::TRACE, "check";
+				uxt.check(&Default::default())
+			}?;
 
-		if dispatch_info.class == DispatchClass::Mandatory {
-			return Err(InvalidTransaction::MandatoryValidation.into())
-		}
+			let dispatch_info = within_span! { sp_tracing::Level::TRACE, "dispatch_info";
+				xt.get_dispatch_info()
+			};
 
-		within_span! {
-			sp_tracing::Level::TRACE, "validate";
-			xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
-		}
+			if dispatch_info.class == DispatchClass::Mandatory {
+				return Err(InvalidTransaction::MandatoryValidation.into())
+			}
+
+			within_span! {
+				sp_tracing::Level::TRACE, "validate";
+				xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
+			}
+		})
 	}
 
 	/// Start an offchain worker and generate extrinsics.

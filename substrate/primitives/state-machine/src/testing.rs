@@ -17,26 +17,52 @@
 
 //! Test implementation for Externalities.
 
-use std::{
-	any::{Any, TypeId},
-	panic::{AssertUnwindSafe, UnwindSafe},
-};
-
 use crate::{
-	backend::Backend, ext::Ext, InMemoryBackend, OverlayedChanges, StorageKey, StorageValue,
+	backend::Backend, ext::Ext, Changes, InMemoryBackend, StorageKey, StorageValue,
 	TrieBackendBuilder,
 };
 
-use hash_db::{HashDB, Hasher};
+use hash_db::HashDB;
 use sp_core::{
 	offchain::testing::TestPersistentOffchainDB,
 	storage::{
 		well_known_keys::{is_child_storage_key, CODE},
 		StateVersion, Storage,
 	},
+	Hash32Algorithm, Hasher, HasherHandle, Hashers,
 };
 use sp_externalities::{Extension, ExtensionStore, Extensions};
 use sp_trie::{PrefixedMemoryDB, StorageProof};
+use std::{
+	any::{Any, TypeId},
+	panic::{AssertUnwindSafe, UnwindSafe},
+};
+
+/// Simple HashMap-based Externalities impl.
+/// TODO if needed thread local impl.
+pub struct DummyHashers;
+
+impl Hashers for DummyHashers {
+	/// Indicate if we the hasher uses host functions.
+	const IS_USING_HOST: bool = false;
+
+	/// Get hasher.
+	fn hash_state_with(_algo: Hash32Algorithm) -> Option<HasherHandle> {
+		unreachable!("DummyHashers")
+	}
+
+	fn hash_update(_state: HasherHandle, _data: &[u8]) -> bool {
+		unreachable!("DummyHashers")
+	}
+
+	fn hash_drop(_state: Option<HasherHandle>) {
+		unreachable!("DummyHashers")
+	}
+
+	fn hash_finalize(_state: HasherHandle) -> Option<[u8; 32]> {
+		unreachable!("DummyHashers")
+	}
+}
 
 /// Simple HashMap-based Externalities impl.
 pub struct TestExternalities<H>
@@ -45,7 +71,7 @@ where
 	H::Out: codec::Codec + Ord,
 {
 	/// The overlay changed storage.
-	overlay: OverlayedChanges<H>,
+	overlay: Changes<H>,
 	offchain_db: TestPersistentOffchainDB,
 	/// Storage backend.
 	pub backend: InMemoryBackend<H>,
@@ -61,7 +87,7 @@ where
 	H::Out: Ord + 'static + codec::Codec,
 {
 	/// Get externalities implementation.
-	pub fn ext(&mut self) -> Ext<H, InMemoryBackend<H>> {
+	pub fn ext(&mut self) -> Ext<H, DummyHashers, InMemoryBackend<H>> {
 		Ext::new(&mut self.overlay, &self.backend, Some(&mut self.extensions))
 	}
 
@@ -101,7 +127,7 @@ where
 		let backend = (storage, state_version).into();
 
 		TestExternalities {
-			overlay: OverlayedChanges::default(),
+			overlay: Changes::default(),
 			offchain_db,
 			extensions: Default::default(),
 			backend,
@@ -110,7 +136,7 @@ where
 	}
 
 	/// Returns the overlayed changes.
-	pub fn overlayed_changes(&self) -> &OverlayedChanges<H> {
+	pub fn overlayed_changes(&self) -> &Changes<H> {
 		&self.overlay
 	}
 
@@ -143,7 +169,12 @@ where
 	/// Insert key/value into backend.
 	///
 	/// This only supports inserting keys in child tries.
-	pub fn insert_child(&mut self, c: sp_core::storage::ChildInfo, k: StorageKey, v: StorageValue) {
+	pub fn insert_child(
+		&mut self,
+		c: sp_core::storage::DefaultChild,
+		k: StorageKey,
+		v: StorageValue,
+	) {
 		self.backend.insert(vec![(Some(c), vec![(k, Some(v))])], self.state_version);
 	}
 
@@ -254,8 +285,11 @@ where
 		let proving_backend = TrieBackendBuilder::wrap(&self.backend)
 			.with_recorder(Default::default())
 			.build();
-		let mut proving_ext =
-			Ext::new(&mut self.overlay, &proving_backend, Some(&mut self.extensions));
+		let mut proving_ext = Ext::<_, DummyHashers, _>::new(
+			&mut self.overlay,
+			&proving_backend,
+			Some(&mut self.extensions),
+		);
 
 		let outcome = sp_externalities::set_and_run_with_externalities(&mut proving_ext, execute);
 		let proof = proving_backend.extract_proof().expect("Failed to extract storage proof");
@@ -279,8 +313,9 @@ where
 	}
 }
 
-impl<H: Hasher> std::fmt::Debug for TestExternalities<H>
+impl<H> std::fmt::Debug for TestExternalities<H>
 where
+	H: Hasher,
 	H::Out: Ord + codec::Codec,
 {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -293,8 +328,9 @@ where
 	}
 }
 
-impl<H: Hasher> PartialEq for TestExternalities<H>
+impl<H> PartialEq for TestExternalities<H>
 where
+	H: Hasher,
 	H::Out: Ord + 'static + codec::Codec,
 {
 	/// This doesn't test if they are in the same state, only if they contains the
@@ -304,8 +340,9 @@ where
 	}
 }
 
-impl<H: Hasher> Default for TestExternalities<H>
+impl<H> Default for TestExternalities<H>
 where
+	H: Hasher,
 	H::Out: Ord + 'static + codec::Codec,
 {
 	fn default() -> Self {
@@ -314,8 +351,9 @@ where
 	}
 }
 
-impl<H: Hasher> From<Storage> for TestExternalities<H>
+impl<H> From<Storage> for TestExternalities<H>
 where
+	H: Hasher,
 	H::Out: Ord + 'static + codec::Codec,
 {
 	fn from(storage: Storage) -> Self {
@@ -323,8 +361,9 @@ where
 	}
 }
 
-impl<H: Hasher> From<(Storage, StateVersion)> for TestExternalities<H>
+impl<H> From<(Storage, StateVersion)> for TestExternalities<H>
 where
+	H: Hasher,
 	H::Out: Ord + 'static + codec::Codec,
 {
 	fn from((storage, state_version): (Storage, StateVersion)) -> Self {
@@ -382,7 +421,11 @@ where
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use sp_core::{storage::ChildInfo, traits::Externalities, H256};
+	use sp_core::{
+		storage::{ChildInfo, DefaultChild},
+		traits::Externalities,
+		H256,
+	};
 	use sp_runtime::traits::BlakeTwo256;
 
 	#[test]
@@ -407,7 +450,7 @@ mod tests {
 		original_ext.insert(b"doe".to_vec(), b"reindeer".to_vec());
 		original_ext.insert(b"dog".to_vec(), b"puppy".to_vec());
 		original_ext.insert(b"dogglesworth".to_vec(), b"cat".to_vec());
-		let child_info = ChildInfo::new_default(&b"test_child"[..]);
+		let child_info = DefaultChild::new(&b"test_child"[..]);
 		original_ext.insert_child(child_info.clone(), b"cattytown".to_vec(), b"is_dark".to_vec());
 		original_ext.insert_child(child_info.clone(), b"doggytown".to_vec(), b"is_sunny".to_vec());
 
@@ -439,6 +482,7 @@ mod tests {
 		assert_eq!(recovered_ext.backend.storage(b"dog").unwrap(), Some(b"puppy".to_vec()));
 		assert_eq!(recovered_ext.backend.storage(b"dogglesworth").unwrap(), Some(b"cat".to_vec()));
 
+		let child_info = ChildInfo::Default(child_info);
 		// Check the original child storage key/values were recovered correctly
 		assert_eq!(
 			recovered_ext.backend.child_storage(&child_info, b"cattytown").unwrap(),
@@ -461,7 +505,7 @@ mod tests {
 		let code = vec![1, 2, 3];
 		ext.set_storage(CODE.to_vec(), code.clone());
 
-		assert_eq!(&ext.storage(CODE).unwrap(), &code);
+		assert_eq!(&ext.storage(CODE, 0, None).unwrap(), &code);
 	}
 
 	#[test]
@@ -477,9 +521,9 @@ mod tests {
 
 		{
 			let mut ext = ext.ext();
-			ext.place_child_storage(&child_info, b"doe".to_vec(), Some(b"reindeer".to_vec()));
-			ext.place_child_storage(&child_info, b"dog".to_vec(), Some(b"puppy".to_vec()));
-			ext.place_child_storage(&child_info, b"dog2".to_vec(), Some(b"puppy2".to_vec()));
+			ext.place_child_storage(&child_info, b"doe", Some(b"reindeer"));
+			ext.place_child_storage(&child_info, b"dog", Some(b"puppy"));
+			ext.place_child_storage(&child_info, b"dog2", Some(b"puppy2"));
 		}
 
 		ext.commit_all().unwrap();
@@ -492,9 +536,9 @@ mod tests {
 				"Should not delete all keys"
 			);
 
-			assert!(ext.child_storage(&child_info, &b"doe"[..]).is_none());
-			assert!(ext.child_storage(&child_info, &b"dog"[..]).is_none());
-			assert!(ext.child_storage(&child_info, &b"dog2"[..]).is_some());
+			assert!(ext.child_storage(&child_info, &b"doe"[..], 0, None).is_none());
+			assert!(ext.child_storage(&child_info, &b"dog"[..], 0, None).is_none());
+			assert!(ext.child_storage(&child_info, &b"dog2"[..], 0, Some(0)).is_some());
 		}
 	}
 

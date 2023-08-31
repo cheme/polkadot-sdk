@@ -17,6 +17,13 @@
 
 //! Stuff to do with the runtime's storage.
 
+pub use self::{
+	stream_iter::StorageStreamIter,
+	transactional::{
+		in_storage_layer, with_storage_layer, with_transaction, with_transaction_unchecked,
+	},
+	types::StorageEntryMetadataBuilder,
+};
 use crate::{
 	hash::{ReversibleStorageHasher, StorageHasher},
 	storage::types::{
@@ -25,18 +32,13 @@ use crate::{
 	},
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
-use sp_core::storage::ChildInfo;
-use sp_runtime::generic::{Digest, DigestItem};
-use sp_std::{collections::btree_set::BTreeSet, marker::PhantomData, prelude::*};
-
-pub use self::{
-	stream_iter::StorageStreamIter,
-	transactional::{
-		in_storage_layer, with_storage_layer, with_transaction, with_transaction_unchecked,
-	},
-	types::StorageEntryMetadataBuilder,
+use sp_core::storage::{
+	transient::{Hash32Algorithm, Mode as TransientMode, Root32Structure},
+	Blob as BlobInfo, ChildInfo, OrderedMap as OrdMapInfo, BLOB_CHUNK_SIZE,
 };
-pub use sp_runtime::TransactionOutcome;
+use sp_runtime::generic::{Digest, DigestItem};
+pub use sp_runtime::{IoHashers, TransactionOutcome};
+use sp_std::{borrow::Cow, collections::btree_set::BTreeSet, marker::PhantomData, prelude::*};
 pub use types::Key;
 
 pub mod bounded_btree_map;
@@ -191,7 +193,7 @@ pub trait StorageList<V: FullCodec> {
 
 	/// Append a single element.
 	///
-	/// Should not be called repeatedly; use `append_many` instead.  
+	/// Should not be called repeatedly; use `append_many` instead.
 	/// Worst case linear `O(len)` with `len` being the number if elements in the list.
 	fn append_one<EncodeLikeValue>(item: EncodeLikeValue)
 	where
@@ -202,7 +204,7 @@ pub trait StorageList<V: FullCodec> {
 
 	/// Append many elements.
 	///
-	/// Should not be called repeatedly; use `appender` instead.  
+	/// Should not be called repeatedly; use `appender` instead.
 	/// Worst case linear `O(len + items.count())` with `len` beings the number if elements in the
 	/// list.
 	fn append_many<EncodeLikeValue, I>(items: I)
@@ -1608,6 +1610,601 @@ pub fn storage_prefix(pallet_name: &[u8], storage_name: &[u8]) -> [u8; 32] {
 	final_key
 }
 
+/// Structure containing global runtime local variable.
+#[derive(Default, Clone)]
+pub struct GlobalRuntimeContent {
+	/// Simple counter primarily targeted at extrinsic numbering.
+	pub extrinsic: u32,
+
+	/// Overlay for storing transient local data.
+	/// TODO split Changes so we don't need an unused hasher here.
+	pub overlay: sp_state_machine::Changes<sp_runtime::traits::BlakeTwo256>,
+}
+
+environmental::environmental!(global_runtime_env: GlobalRuntimeContent, with_init);
+// TODO move all in an env module
+
+fn transient_commit_transaction() -> bool {
+	global_runtime_env::with_or(|env| env.overlay.commit_transaction().is_ok(), Default::default)
+}
+
+fn transient_rollback_transaction() -> bool {
+	global_runtime_env::with_or(|env| env.overlay.rollback_transaction().is_ok(), Default::default)
+}
+
+fn transient_start_transaction() {
+	global_runtime_env::with_or(|env| env.overlay.start_transaction(), Default::default);
+}
+
+/// Reset env before each processing (generally
+/// a call to `global_runtime_env_using` is enough
+/// but it is not call in all cases.
+pub fn initialize_global_env() {
+	global_runtime_env::with_or(|env| *env = Default::default(), Default::default);
+}
+
+/// Access global extrinsic counter.
+pub fn get_global_extrinsic_count() -> u32 {
+	global_runtime_env::with_or(|env| env.extrinsic, Default::default)
+}
+
+/// Set global extrinsic counter.
+pub fn set_global_extrinsic_count(index: u32) {
+	global_runtime_env::with_or(|env| env.extrinsic += index, Default::default);
+}
+
+/// Increase global extrinsic counter.
+pub fn increase_global_extrinsic_count() {
+	global_runtime_env::with_or(|env| env.extrinsic += 1, Default::default);
+}
+
+/// Declare global runtime from top level runtime call.
+pub fn global_runtime_env_using<R, F: FnOnce() -> R>(
+	protected: &mut GlobalRuntimeContent,
+	f: F,
+) -> R {
+	global_runtime_env::using(protected, f)
+}
+
+/// Check if a given storage was created.
+pub fn storage_exists(info: &ChildInfo) -> bool {
+	global_runtime_env::with_or(|env| env.overlay.storage_exists(info), Default::default)
+}
+
+/// Change a storage storage definition. If no storage exists a new empty one is created.
+///
+/// Return false if ignored (eg for default child trie).
+/// Return true if unchanged.
+pub fn update_storage_info(info: ChildInfo, clear_existing: bool) -> bool {
+	global_runtime_env::with_or(
+		|env| env.overlay.update_storage_info(info, clear_existing),
+		Default::default,
+	)
+}
+
+/// Copy a storage current content and definition under a different name.
+/// Overwrite target if a target exists.
+///
+/// Return false if source do not exist.
+/// Return false if storage do not support this operation.
+pub fn storage_clone(info: &ChildInfo, target_name: &[u8]) -> bool {
+	global_runtime_env::with_or(|env| env.overlay.storage_copy(info, target_name), Default::default)
+}
+
+/// Move a storage current content and definition under a different name.
+/// Overwrite target if a target exists.
+///
+/// Return false if source do not exist.
+/// Return false if storage do not support this operation.
+/// TODO consider single function for move and clone?
+pub fn storage_move(info: &ChildInfo, target_name: &[u8]) -> bool {
+	global_runtime_env::with_or(|env| env.overlay.storage_move(info, target_name), Default::default)
+}
+
+/// Returns Some iff the map name exists, None otherwise. If Some, then the inner value is the
+/// number of items in the map name.
+pub fn map_count(name: &[u8]) -> Option<u32> {
+	global_runtime_env::with_or(|env| env.overlay.map_count(name), Default::default)
+}
+
+/// Create a new empty transient map.
+/// Clear possibly existing map.
+pub fn map_new(name: &[u8], mode: TransientMode) {
+	global_runtime_env::with_or(
+		|env| {
+			env.overlay.update_storage_info(
+				ChildInfo::OrderedMap(OrdMapInfo {
+					name: name.to_vec(),
+					mode: Some(mode),
+					algorithm: None,
+				}),
+				true,
+			);
+		},
+		Default::default,
+	)
+}
+
+/// Returns true iff the map name is present in execution state.
+pub fn map_exists(name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay.storage_exists(&info)
+		},
+		Default::default,
+	)
+}
+
+/// Delete ordered map if present or return false.
+pub fn map_delete(name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			if env.overlay.storage_exists(&info) {
+				let _ = env.overlay.clear_child_storage(&info);
+				true
+			} else {
+				false
+			}
+		},
+		Default::default,
+	)
+}
+
+/// Clone ordered map content under a different name.
+/// If origin does not exist, this does nothing and return false.
+/// Target content is overwritten.
+pub fn map_clone(name: &[u8], target_name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay.storage_copy(&info, target_name)
+		},
+		Default::default,
+	)
+}
+
+/// Move ordered map under a different name.
+/// If origin does not exist, this does nothing and return false.
+/// If target exists, it is overwritten.
+pub fn map_rename(name: &[u8], target_name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay.storage_move(&info, target_name)
+		},
+		Default::default,
+	)
+}
+
+/// Inserts a single (key, value) pair into map name, and overwriting the item if it did.
+///
+/// If map do not exist this operatio is skipped and operation return false.
+pub fn map_insert_item(name: &[u8], key: &[u8], value: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay.set_child_storage(&info, key, Some(value))
+		},
+		Default::default,
+	)
+}
+
+/// Removes the pair with the given key from the map name, if the map exists and contains the
+/// item. Does nothing and return false otherwise.
+pub fn map_remove_item(name: &[u8], key: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay.set_child_storage(&info, key, None)
+		},
+		Default::default,
+	)
+}
+
+/// Returns true iff the map name existsa and contains key.
+pub fn map_contains_item(name: &[u8], key: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay.child_storage(&info, key, 0, Some(0)).is_some()
+		},
+		Default::default,
+	)
+}
+
+/// Returns Some iff the map name exists and contains key.
+/// If so, the inner value is that associated with key.
+/// If limit is specified, only that many bytes are returned.
+/// Offset start bytes are also skipped from return value.
+/// TODO should be able to not instantiate value here: just rc access on value.
+/// TODO if rc refcell access the slice of value, there will be no need for limit and value_offset.
+pub fn map_get_item(
+	name: &[u8],
+	key: &[u8],
+	limit: Option<u32>,
+	value_offset: u32,
+) -> Option<Vec<u8>> {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay
+				.child_storage(&info, key, value_offset, limit)
+				.flatten()
+				.map(Cow::into_owned)
+		},
+		Default::default,
+	)
+}
+
+/// Returns Some iff the map name exists and contains key. If so, the inner value is the length
+/// of the value associated with key.
+pub fn map_len_item(name: &[u8], key: &[u8]) -> Option<u32> {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay.child_storage_len(&info, key)
+		},
+		Default::default,
+	)
+	.flatten()
+}
+
+/// Calculates and returns the root of the data structure structure containing the items held in
+/// the map name. Returns None if map name does not exist.
+pub fn map_root32<H>(name: &[u8], algorithm: Root32Structure) -> Option<[u8; 32]>
+where
+	H: sp_core::Hasher,
+	H::Out: Encode,
+{
+	global_runtime_env::with_or(
+		|env| {
+			let info = ChildInfo::OrderedMap(OrdMapInfo {
+				name: name.to_vec(),
+				mode: None,
+				algorithm: Some(algorithm),
+			});
+			// update structure to apply
+			if !env.overlay.update_storage_info(info.clone(), false) {
+				return None
+			}
+			let root = env.overlay.ordered_map_storage_root(&info)?;
+			let mut result = [0u8; 32];
+			result.copy_from_slice(root.as_slice());
+			Some(result)
+		},
+		Default::default,
+	)
+}
+
+/// Returns up to the next count keys in map name immediately following key. If fewer items
+/// exist after key than count, then only the remaining items are returned. If the map name does
+/// not exist then None is returned.
+pub fn map_next_keys(name: &[u8], key: &[u8], count: u32) -> Option<Vec<Vec<u8>>> {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			let child_info = &info;
+
+			let iter = env.overlay.child_iter_after(child_info, key)?;
+
+			let mut result = Vec::with_capacity(count as usize);
+			for (k, v) in iter {
+				if v.value().is_some() {
+					result.push(k.to_vec());
+					if result.len() == count as usize {
+						break
+					}
+				}
+			}
+			Some(result)
+		},
+		Default::default,
+	)
+}
+
+// TODO no use as get return ptr already
+pub fn map_read_item(
+	name: &[u8],
+	key: &[u8],
+	value_out: &mut [u8],
+	value_offset: u32,
+) -> Option<u32> {
+	let len = value_out.len();
+	if len > u32::MAX as usize {
+		return None
+	}
+	map_get_item(name, key, Some(len as u32), value_offset).map(|value| {
+		let written = sp_std::cmp::min(value.len(), value_out.len());
+		value_out[..written].copy_from_slice(&value[..written]);
+		written as u32
+	})
+}
+
+// TODO need pub ??
+pub fn hash_with(data: &[u8], algo: Hash32Algorithm) -> [u8; 32] {
+	match algo {
+		Hash32Algorithm::Blake2b256 => sp_io::hashing::blake2_256(data),
+	}
+}
+
+/// Returns Some iff the map name exists and contains key. If so, the inner value is the value
+/// associated with key when hashed with algorithm.
+pub fn map_hash32_item(name: &[u8], key: &[u8], algo: Hash32Algorithm) -> Option<[u8; 32]> {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ordered_map_info_from_name(name);
+			env.overlay
+				.child_storage(&info, key, 0, None)
+				.flatten()
+				.map(|v| hash_with(v.as_ref(), algo))
+		},
+		Default::default,
+	)
+}
+
+/// Returns Some of a Vec of all items in the map name, sorted; or None if the map name does not
+/// exist.
+pub fn map_dump(name: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+	global_runtime_env::with_or(
+		|env| {
+			env.overlay.ordered_map_changes(name).map(|(data, _info)| {
+				data.filter_map(|(k, v)| v.value_ref().as_ref().map(|v| (k.clone(), v.clone())))
+					.collect()
+			})
+		},
+		Default::default,
+	)
+}
+
+/// Returns Some of a Vec of all pairs of keys and values in the map name hashed with algorithm
+/// and in order of the (unhashed) key; or None if the map name does not exist.
+/// TODO question hashing key (except for equality checking, issue here is we don't have
+/// preimage).
+pub fn map_dump_hashed(
+	name: &[u8],
+	algorithm: Hash32Algorithm,
+) -> Option<Vec<([u8; 32], [u8; 32])>> {
+	global_runtime_env::with_or(
+		|env| {
+			env.overlay.ordered_map_changes(name).map(|(data, _info)| {
+				data.filter_map(|(k, v)| {
+					v.value_ref()
+						.as_ref()
+						.map(|v| (hash_with(k, algorithm), hash_with(v.as_ref(), algorithm)))
+				})
+				.collect()
+			})
+		},
+		Default::default,
+	)
+}
+
+/// Returns size of the blob for a given name, or `None` if the blob does not exist.
+pub fn blob_len(name: &[u8]) -> Option<u32> {
+	global_runtime_env::with_or(
+		|env| {
+			// At this point no supported storage requires to clone backend.
+			env.overlay.blob_len(name)
+		},
+		Default::default,
+	)
+}
+
+/// Read from a blob at a given offset.
+/// Return the `None` if blob is not found.
+/// Return number of bytes read otherwise (if offset is out of bounds, return 0).
+pub fn blob_read(name: &[u8], value_out: &mut [u8], value_offset: u32) -> Option<u32> {
+	let len = value_out.len();
+	if len > u32::MAX as usize {
+		return None
+	}
+	blob_get(name, Some(len as u32), value_offset).map(|value| {
+		let written = sp_std::cmp::min(value.len(), value_out.len());
+		value_out[..written].copy_from_slice(&value[..written]);
+		written as u32
+	})
+}
+
+/// Create a new empty blob.
+/// Clear possibly existing blob.
+pub fn blob_new(name: &[u8], mode: TransientMode) {
+	global_runtime_env::with_or(
+		|env| {
+			// TODO rem func and move to io
+			env.overlay.update_storage_info(
+				ChildInfo::Blob(BlobInfo {
+					name: name.to_vec(),
+					mode: Some(mode),
+					algorithm: None,
+				}),
+				true,
+			);
+		},
+		Default::default,
+	)
+}
+
+/// Returns true iff the blob name is present in execution state.
+pub fn blob_exists(name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = blob_info_from_name(name);
+			env.overlay.storage_exists(&info)
+		},
+		Default::default,
+	)
+}
+
+/// Delete blob if present, return false otherwise.
+pub fn blob_delete(name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = blob_info_from_name(name);
+			if env.overlay.storage_exists(&info) {
+				let _ = env.overlay.clear_child_storage(&info);
+				true
+			} else {
+				false
+			}
+		},
+		Default::default,
+	)
+}
+
+/// Clone blob value under a different name.
+/// If origin does not exist, this does nothing and return false.
+/// Target content is overwritten.
+pub fn blob_clone(name: &[u8], target_name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = blob_info_from_name(name);
+			env.overlay.storage_copy(&info, target_name)
+		},
+		Default::default,
+	)
+}
+
+/// Move blob value under a different name.
+/// If origin does not exist, this does nothing and return false.
+/// If target exists, it is overwritten.
+pub fn blob_rename(name: &[u8], target_name: &[u8]) -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let info = blob_info_from_name(name);
+			env.overlay.storage_move(&info, target_name)
+		},
+		Default::default,
+	)
+}
+
+/// Get value bytes for the blob.
+/// All bytes if `limit` is `None`, or up to `limit` bytes.
+/// Read bytes starting at a given offset, if offset is out of range, return
+/// an empty bytes vector.
+/// Returns `None` if the blob does not exist.
+/// TODO could return rc on multiple non concatenated value, to avoid instantiating.
+pub fn blob_get(name: &[u8], limit: Option<u32>, value_offset: u32) -> Option<Vec<u8>> {
+	global_runtime_env::with_or(
+		|env| {
+			let info = blob_info_from_name(name);
+			env.overlay
+				.child_storage(&info, &[], value_offset, limit)
+				.flatten()
+				.map(Cow::into_owned)
+		},
+		Default::default,
+	)
+}
+
+/// Iterate on all change to report for a block.
+/// Return true on success, false otherwise.
+/// Cause of failure is mainly open transaction.
+/// This method should be called at least once at every end of block
+/// processsing to allow archival of transient data.
+/// On successful call, all transient data is removed.
+pub fn archive_transient_data() -> bool {
+	global_runtime_env::with_or(
+		|env| {
+			let Some((iter_map, iter_blob)) = env.overlay.drain_transient_committed() else {
+				return false
+			};
+			for (meta, values) in iter_map {
+				for (key, value) in values {
+					if let Some(v) = value.as_ref() {
+						sp_io::ordered_map_storage::archive_item(
+							&meta.infos.name,
+							&key,
+							v.as_ref(),
+						);
+					}
+				}
+				if let (Some(root), Some(structure)) = (meta.cached_hash, meta.infos.algorithm) {
+					sp_io::ordered_map_storage::archive_root(
+						&meta.infos.name,
+						&root,
+						structure.into(),
+					);
+				}
+			}
+			for (meta, chunks) in iter_blob {
+				let mut len = 0;
+				for chunk in chunks {
+					len += BLOB_CHUNK_SIZE;
+					let chunk = if len > meta.size {
+						&chunk[..BLOB_CHUNK_SIZE - (len - meta.size)]
+					} else {
+						debug_assert!(chunk.len() == BLOB_CHUNK_SIZE);
+						&chunk[..]
+					};
+					sp_io::blob_storage::archive_chunk(&meta.infos.name, chunk);
+				}
+				if let (Some(hash), Some(algo)) = (meta.cached_hash, meta.infos.algorithm) {
+					sp_io::blob_storage::archive_hash(&meta.infos.name, &hash, algo.into());
+				}
+			}
+			true
+		},
+		Default::default,
+	)
+}
+
+/// If blob exists, return it's hash for a given algorithm.
+pub fn blob_hash32(name: &[u8], algorithm: Hash32Algorithm) -> Option<[u8; 32]> {
+	global_runtime_env::with_or(
+		|env| {
+			let info = ChildInfo::Blob(BlobInfo {
+				name: name.to_vec(),
+				mode: None,
+				algorithm: Some(algorithm),
+			});
+			// update structure to apply
+			if !env.overlay.update_storage_info(info.clone(), false) {
+				return None
+			}
+			let hash = env.overlay.blob_hash::<IoHashers>(&info)?;
+			let mut result = [0u8; 32];
+			result.copy_from_slice(hash.as_slice());
+			Some(result)
+		},
+		Default::default,
+	)
+}
+
+/// Write value into a blob.
+///
+/// If data is present at offset, it is overwritten by new value.
+/// If new value is written beyond blob size, the value is appended
+/// to the blob.
+///
+/// If blob does not exist, the operation is ignored and false
+/// is returned.
+///
+/// If offset is bigger than current blog size the operation is
+/// ignored and false is returned.
+///
+/// If size of resulting blob is over u32::MAX bytes, this is ignored
+/// and return false.
+pub fn blob_set(name: &[u8], value: &[u8], offset: u32) -> bool {
+	global_runtime_env::with_or(|env| env.overlay.blob_set(name, value, offset), Default::default)
+}
+
+/// Truncate blob to a given size.
+/// If blob is smaller or already this size, do nothing and return false.
+/// If blob is missing return false.
+pub fn blob_truncate(name: &[u8], new_size: u32) -> bool {
+	global_runtime_env::with_or(|env| env.overlay.blob_truncate(name, new_size), Default::default)
+}
+
+pub fn blob_info_from_name(name: &[u8]) -> ChildInfo {
+	ChildInfo::Blob(BlobInfo { name: name.to_vec(), mode: None, algorithm: None })
+}
+
+pub fn ordered_map_info_from_name(name: &[u8]) -> ChildInfo {
+	ChildInfo::OrderedMap(OrdMapInfo { name: name.to_vec(), mode: None, algorithm: None })
+}
+
 #[cfg(test)]
 mod test {
 	use super::*;
@@ -2020,5 +2617,97 @@ mod test {
 
 			assert_eq!(FooSet::decode_len().unwrap(), 7);
 		});
+	}
+
+	#[test]
+	fn blob_changes() {
+		let blob1 =
+			ChildInfo::new_blob(b"sub1", Some(sp_core::storage::transient::Mode::Drop), None);
+		let blob2 =
+			ChildInfo::new_blob(b"sub2", Some(sp_core::storage::transient::Mode::Drop), None);
+		let blob3 =
+			ChildInfo::new_blob(b"sub3", Some(sp_core::storage::transient::Mode::Drop), None);
+
+		crate::storage::transient_start_transaction();
+		// blob not created
+		assert!(!crate::storage::blob_set(blob1.storage_key(), &[0], 0));
+		// create blob
+		assert!(crate::storage::update_storage_info(blob1.clone(), true));
+		// out of range
+		assert!(!crate::storage::blob_set(blob1.storage_key(), &[0], 1));
+		// ok
+		assert!(crate::storage::blob_set(blob1.storage_key(), &[0], 0));
+		assert!(crate::storage::blob_set(blob1.storage_key(), &[1, 2], 1));
+		{
+			crate::storage::blob_new(blob2.storage_key(), sp_core::storage::transient::Mode::Drop);
+			assert_eq!(
+				crate::storage::blob_get(blob1.storage_key(), Some(1), 1),
+				Some(vec![1].into())
+			);
+			assert!(crate::storage::blob_exists(blob1.storage_key()));
+			assert!(!crate::storage::blob_exists(blob3.storage_key()));
+			crate::storage::transient_start_transaction();
+			assert!(crate::storage::blob_clone(blob1.storage_key(), blob3.storage_key()));
+			assert_eq!(
+				crate::storage::blob_get(blob3.storage_key(), Some(8), 1),
+				Some(vec![1, 2].into())
+			);
+			assert!(crate::storage::blob_delete(blob1.storage_key()));
+			assert!(!crate::storage::blob_exists(blob1.storage_key()));
+			assert_eq!(crate::storage::blob_get(blob1.storage_key(), Some(8), 1), None);
+			crate::storage::transient_start_transaction();
+			assert!(crate::storage::blob_rename(blob3.storage_key(), blob1.storage_key()));
+			assert_eq!(
+				crate::storage::blob_get(blob1.storage_key(), Some(1), 1),
+				Some(vec![1].into())
+			);
+			assert!(!crate::storage::blob_exists(blob3.storage_key()));
+			assert_eq!(crate::storage::blob_get(blob3.storage_key(), Some(8), 1), None);
+			assert_eq!(crate::storage::blob_len(blob1.storage_key()), Some(3));
+			assert!(!crate::storage::blob_truncate(blob1.storage_key(), 5));
+			assert!(crate::storage::blob_truncate(blob1.storage_key(), 1));
+			assert_eq!(
+				crate::storage::blob_get(blob1.storage_key(), None, 0),
+				Some(vec![0].into())
+			);
+			assert_eq!(crate::storage::blob_len(blob1.storage_key()), Some(1));
+			let value_hash = sp_io::hashing::blake2_256(&[0]);
+			assert_eq!(
+				crate::storage::blob_hash32(
+					blob1.storage_key(),
+					sp_core::storage::transient::Hash32Algorithm::Blake2b256
+				)
+				.as_ref()
+				.map(|h| &h[..]),
+				Some(&value_hash[..])
+			);
+			let mut value = vec![0; 800];
+			for i in 0u8..80 {
+				value[i as usize * 10] = i;
+			}
+			let value_hash = sp_io::hashing::blake2_256(value.as_slice());
+			assert!(crate::storage::blob_set(blob1.storage_key(), value.as_slice(), 0));
+			assert_eq!(
+				crate::storage::blob_hash32(
+					blob1.storage_key(),
+					sp_core::storage::transient::Hash32Algorithm::Blake2b256
+				)
+				.as_ref()
+				.map(|h| &h[..]),
+				Some(&value_hash[..])
+			);
+			crate::storage::transient_rollback_transaction();
+			assert!(!crate::storage::blob_exists(blob1.storage_key()));
+			assert_eq!(crate::storage::blob_get(blob1.storage_key(), Some(8), 1), None);
+			crate::storage::transient_rollback_transaction();
+			assert_eq!(
+				crate::storage::blob_get(blob1.storage_key(), Some(1), 1),
+				Some(vec![1].into())
+			);
+			assert!(crate::storage::blob_exists(blob1.storage_key()));
+			assert!(!crate::storage::blob_exists(blob3.storage_key()));
+		}
+
+		// TODO test multiple consecutive rename: same tx, different tx.
 	}
 }

@@ -59,8 +59,8 @@ use sp_consensus::{BlockOrigin, BlockStatus, Error as ConsensusError};
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedSender};
 use sp_core::{
 	storage::{
-		well_known_keys, ChildInfo, ChildType, PrefixedStorageKey, StorageChild, StorageData,
-		StorageKey,
+		well_known_keys, ChildInfo, ChildType, DefaultChild, PrefixedStorageKey, StorageBlob,
+		StorageData, StorageDefaultChild, StorageKey, StorageOrderedMap,
 	},
 	traits::{CallContext, SpawnNamed},
 };
@@ -74,9 +74,9 @@ use sp_runtime::{
 };
 use sp_state_machine::{
 	prove_child_read, prove_range_read_with_child_with_size, prove_read,
-	read_range_proof_check_with_child_on_proving_backend, Backend as StateBackend,
-	ChildStorageCollection, KeyValueStates, KeyValueStorageLevel, StorageCollection,
-	MAX_NESTED_TRIE_DEPTH,
+	read_range_proof_check_with_child_on_proving_backend, Backend as StateBackend, BlobsCollection,
+	ChildStorageCollection, KeyValueStates, KeyValueStorageLevel, OrdMapsCollection,
+	StorageCollection, MAX_NESTED_TRIE_DEPTH,
 };
 use sp_trie::{CompactProof, StorageProof};
 use std::{
@@ -628,7 +628,7 @@ where
 				let storage_changes = match storage_changes {
 					sc_consensus::StorageChanges::Changes(storage_changes) => {
 						self.backend.begin_state_operation(&mut operation.op, parent_hash)?;
-						let (main_sc, child_sc, offchain_sc, tx, _, tx_index) =
+						let (main_sc, child_sc, btree_sc, blob_sc, offchain_sc, tx, _, tx_index) =
 							storage_changes.into_inner();
 
 						if self.config.offchain_indexing_api {
@@ -636,40 +636,108 @@ where
 						}
 
 						operation.op.update_db_storage(tx)?;
-						operation.op.update_storage(main_sc.clone(), child_sc.clone())?;
+						operation.op.update_storage(
+							main_sc.clone(),
+							child_sc.clone(),
+							btree_sc.clone(),
+							blob_sc.clone(),
+						)?;
 						operation.op.update_transaction_index(tx_index)?;
 
-						Some((main_sc, child_sc))
+						Some((main_sc, child_sc, btree_sc, blob_sc))
 					},
 					sc_consensus::StorageChanges::Import(changes) => {
 						let mut storage = sp_storage::Storage::default();
-						for state in changes.state.0.into_iter() {
+						for mut state in changes.state.0.into_iter() {
 							if state.parent_storage_keys.is_empty() && state.state_root.is_empty() {
 								for (key, value) in state.key_values.into_iter() {
 									storage.top.insert(key, value);
 								}
 							} else {
-								for parent_storage in state.parent_storage_keys {
+								let nb = state.parent_storage_keys.len();
+								for (i, parent_storage) in
+									state.parent_storage_keys.into_iter().enumerate()
+								{
 									let storage_key = PrefixedStorageKey::new_ref(&parent_storage);
-									let storage_key =
-										match ChildType::from_prefixed_key(storage_key) {
-											Some((ChildType::ParentKeyId, storage_key)) =>
-												storage_key,
-											None =>
-												return Err(Error::Backend(
-													"Invalid child storage key.".to_string(),
-												)),
-										};
-									let entry = storage
-										.children_default
-										.entry(storage_key.to_vec())
-										.or_insert_with(|| StorageChild {
-											data: Default::default(),
-											child_info: ChildInfo::new_default(storage_key),
-										});
-									for (key, value) in state.key_values.iter() {
-										entry.data.insert(key.clone(), value.clone());
-									}
+									match ChildType::from_prefixed_key(&storage_key) {
+										Some((ChildType::Default, storage_key)) => {
+											let entry = storage
+												.children_default
+												.entry(storage_key.to_vec())
+												.or_insert_with(|| StorageDefaultChild {
+													data: Default::default(),
+													info: DefaultChild::new(storage_key),
+												});
+											let key_values = if i + 1 == nb {
+												std::mem::take(&mut state.key_values)
+											} else {
+												state.key_values.clone()
+											};
+											for (key, value) in key_values.into_iter() {
+												entry.data.insert(key, value);
+											}
+										},
+										Some((ChildType::OrderedMap, storage_key)) => {
+											// TODO currently we don't warp synch this kind of info
+											// so this code is a filler.
+											let entry = storage
+												.ordered_map_storages
+												.entry(storage_key.to_vec())
+												.or_insert_with(|| {
+													StorageOrderedMap {
+														data: Default::default(),
+														info: sp_core::storage::OrderedMap {
+															name: storage_key.to_vec(),
+															// only archive make sense to sync
+															mode: Some(sp_core::storage::transient::Mode::Archive),
+															algorithm: None,
+														},
+														root: None,
+													}
+												});
+											debug_assert!(state.blob.is_none());
+											let key_values = if i + 1 == nb {
+												std::mem::take(&mut state.key_values)
+											} else {
+												state.key_values.clone()
+											};
+											for (key, value) in key_values.into_iter() {
+												entry.data.insert(key, value);
+											}
+										},
+										Some((ChildType::Blob, storage_key)) => {
+											// TODO currently we don't warp synch this kind of info
+											// so this code is a filler.
+											let entry = storage
+												.blob_storages
+												.entry(storage_key.to_vec())
+												.or_insert_with(|| {
+													StorageBlob {
+														data: Default::default(),
+															info: sp_core::storage::Blob { name: storage_key.to_vec(),
+															// only archive make sense to sync
+															mode: Some(sp_core::storage::transient::Mode::Archive),
+															algorithm: None,
+														},
+														hash: None,
+													}
+												});
+											debug_assert!(state.key_values.is_empty());
+											if i + 1 == nb {
+												entry.data = std::mem::take(&mut state.blob)
+													.unwrap_or_else(|| Vec::new());
+											} else {
+												entry.data = state
+													.blob
+													.clone()
+													.unwrap_or_else(|| Vec::new());
+											}
+										},
+										None =>
+											return Err(Error::Backend(
+												"Invalid child storage key.".to_string(),
+											)),
+									};
 								}
 							}
 						}
@@ -685,6 +753,7 @@ where
 							warn!("Error importing state: State root mismatch.");
 							return Err(Error::InvalidStateRoot)
 						}
+						// TODO inject/persist blob and btree or just skip their import
 						None
 					},
 				};
@@ -1015,7 +1084,12 @@ where
 		&self,
 		notification: Option<BlockImportNotification<Block>>,
 		import_notification_action: ImportNotificationAction,
-		storage_changes: Option<(StorageCollection, ChildStorageCollection)>,
+		storage_changes: Option<(
+			StorageCollection,
+			ChildStorageCollection,
+			OrdMapsCollection,
+			BlobsCollection,
+		)>,
 	) -> sp_blockchain::Result<()> {
 		let notification = match notification {
 			Some(notify_import) => notify_import,
@@ -1041,6 +1115,13 @@ where
 					&notification.hash,
 					storage_changes.0.into_iter(),
 					storage_changes.1.into_iter().map(|(sk, v)| (sk, v.into_iter())),
+					storage_changes.2.into_iter().map(|(infos, values)| {
+						(infos.infos.name, (!infos.removed).then(|| values.into_iter()))
+					}),
+					storage_changes
+						.3
+						.into_iter()
+						.map(|(infos, blob)| (infos.infos.name, (!infos.removed).then(|| blob))),
 				);
 			}
 		};
@@ -1282,9 +1363,12 @@ where
 		let child_info = |storage_key: &Vec<u8>| -> sp_blockchain::Result<ChildInfo> {
 			let storage_key = PrefixedStorageKey::new_ref(storage_key);
 			match ChildType::from_prefixed_key(storage_key) {
-				Some((ChildType::ParentKeyId, storage_key)) =>
-					Ok(ChildInfo::new_default(storage_key)),
-				None => Err(Error::Backend("Invalid child storage key.".to_string())),
+				Some((ChildType::Default, storage_key)) => Ok(ChildInfo::new_default(storage_key)),
+				// TODO have a function to fetch transient content
+				// (btree could be here but awkward as this is meant
+				// to be state at block start).
+				Some((ChildType::OrderedMap, _)) | Some((ChildType::Blob, _)) | None =>
+					Err(Error::Backend("Invalid child storage key.".to_string())),
 			}
 		};
 		let mut current_child = if start_key.len() == 2 {
@@ -1306,6 +1390,7 @@ where
 			KeyValueStorageLevel {
 				state_root: Vec::new(),
 				key_values: Vec::new(),
+				blob: None,
 				parent_storage_keys: Vec::new(),
 			},
 			false,
@@ -1365,6 +1450,7 @@ where
 					KeyValueStorageLevel {
 						state_root: child_root,
 						key_values: entries,
+						blob: None,
 						parent_storage_keys: Vec::new(),
 					},
 					complete,
@@ -1388,6 +1474,7 @@ where
 		start_key: &[Vec<u8>],
 	) -> sp_blockchain::Result<(KeyValueStates, usize)> {
 		let mut db = sp_state_machine::MemoryDB::<HashingFor<Block>>::new(&[]);
+		// TODO here we need to decode in with support for multiple child kind.
 		// Compact encoding
 		let _ = sp_trie::decode_compact::<sp_state_machine::LayoutV0<HashingFor<Block>>, _, _>(
 			&mut db,
@@ -1969,8 +2056,15 @@ where
 		&self,
 		filter_keys: Option<&[StorageKey]>,
 		child_filter_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		btrees_filter_keys: Option<&[(StorageKey, Option<Vec<StorageKey>>)]>,
+		blobs_filter_keys: Option<&[StorageKey]>,
 	) -> sp_blockchain::Result<StorageEventStream<Block::Hash>> {
-		Ok(self.storage_notifications.listen(filter_keys, child_filter_keys))
+		Ok(self.storage_notifications.listen(
+			filter_keys,
+			child_filter_keys,
+			btrees_filter_keys,
+			blobs_filter_keys,
+		))
 	}
 }
 

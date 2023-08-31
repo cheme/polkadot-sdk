@@ -21,6 +21,7 @@ kvdb = "0.13.0"
 kvdb-memorydb = "0.13.0"
 kvdb-rocksdb = { version = "0.19.0", optional = true }
 linked-hash-map = "0.5.4"
+libloading = "0.7.4"
 log = "0.4.17"
 parity-db = "0.4.8"
 parking_lot = "0.12.1"
@@ -47,13 +48,14 @@ substrate-test-runtime-client = { version = "2.0.0", path = "../../test-utils/ru
 array-bytes = "6.1"
 
 [features]
-default = []
+default = ["rocksdb", "test-plugin"] # TODO rem all feats
 test-helpers = []
 runtime-benchmarks = [
 	"kitchensink-runtime/runtime-benchmarks",
 	"sp-runtime/runtime-benchmarks",
 ]
 rocksdb = [ "kvdb-rocksdb" ]
+test-plugin = [] # Include test that requires custom build. TODO manage with build.rs
 
 [[bench]]
 name = "state_access"

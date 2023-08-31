@@ -26,6 +26,7 @@ use crate::{
 	util::{pack_ptr_and_len, unpack_ptr_and_len},
 	Pointer, RIType,
 };
+use sp_storage::transient::HasherHandle;
 
 #[cfg(all(not(feature = "std"), not(feature = "disable_target_static_assertions")))]
 use static_assertions::assert_eq_size;
@@ -532,4 +533,44 @@ impl PassBy for sp_storage::StateVersion {
 
 impl PassBy for sp_externalities::MultiRemovalResults {
 	type PassBy = Codec<Self>;
+}
+
+/// The type is passed directly.
+impl RIType for HasherHandle {
+	type FFIType = u32;
+}
+
+#[cfg(not(feature = "std"))]
+impl IntoFFIValue for HasherHandle {
+	type Owned = ();
+
+	fn into_ffi_value(&self) -> WrappedFFIValue<u32> {
+		let handle: u32 = unsafe { sp_std::mem::transmute(*self) };
+		handle.into()
+	}
+}
+
+#[cfg(not(feature = "std"))]
+impl FromFFIValue for HasherHandle {
+	fn from_ffi_value(arg: u32) -> HasherHandle {
+		unsafe { sp_std::mem::transmute(arg) }
+	}
+}
+
+#[cfg(feature = "std")]
+impl FromFFIValue for HasherHandle {
+	type SelfInstance = HasherHandle;
+
+	fn from_ffi_value(_: &mut dyn FunctionContext, arg: u32) -> Result<HasherHandle> {
+		// We use unsafe to keep the type as opaque as possible.
+		// (handle is repr(transparent) of u32.
+		Ok(unsafe { sp_std::mem::transmute(arg) })
+	}
+}
+
+#[cfg(feature = "std")]
+impl IntoFFIValue for HasherHandle {
+	fn into_ffi_value(self, _: &mut dyn FunctionContext) -> Result<u32> {
+		Ok(unsafe { sp_std::mem::transmute(self) })
+	}
 }
