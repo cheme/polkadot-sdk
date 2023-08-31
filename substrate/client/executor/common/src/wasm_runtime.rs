@@ -78,6 +78,23 @@ pub trait WasmModule: Sync + Send {
 	fn new_instance(&self) -> Result<Box<dyn WasmInstance>, Error>;
 }
 
+/// Kind of call of an instance.
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum CallMode {
+	/// Single call on instance.
+	Single,
+
+	/// First call on instance.
+	First,
+
+	/// Subsequent call on instance.
+	Next,
+
+	/// Last call on instance (no call actually happen).
+	/// Not needed if last call was `CallMode::Single`.
+	Stop,
+}
+
 /// A trait that defines an abstract wasm module instance.
 ///
 /// This can be implemented by an execution engine.
@@ -87,8 +104,13 @@ pub trait WasmInstance: Send {
 	/// Before execution, instance is reset.
 	///
 	/// Returns the encoded result on success.
-	fn call(&mut self, method: InvokeMethod, data: &[u8]) -> Result<Vec<u8>, Error> {
-		self.call_with_allocation_stats(method, data).0
+	fn call(
+		&mut self,
+		method: InvokeMethod,
+		data: &[u8],
+		mode: CallMode,
+	) -> Result<Vec<u8>, Error> {
+		self.call_with_allocation_stats(method, data, mode).0
 	}
 
 	/// Call a method on this WASM instance.
@@ -100,6 +122,7 @@ pub trait WasmInstance: Send {
 		&mut self,
 		method: InvokeMethod,
 		data: &[u8],
+		mode: CallMode,
 	) -> (Result<Vec<u8>, Error>, Option<AllocationStats>);
 
 	/// Call an exported method on this WASM instance.
@@ -107,8 +130,8 @@ pub trait WasmInstance: Send {
 	/// Before execution, instance is reset.
 	///
 	/// Returns the encoded result on success.
-	fn call_export(&mut self, method: &str, data: &[u8]) -> Result<Vec<u8>, Error> {
-		self.call(method.into(), data)
+	fn call_export(&mut self, method: &str, data: &[u8], mode: CallMode) -> Result<Vec<u8>, Error> {
+		self.call(method.into(), data, mode)
 	}
 
 	/// Get the value from a global with the given `name`.

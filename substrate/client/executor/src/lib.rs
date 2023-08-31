@@ -52,7 +52,9 @@ pub use sp_wasm_interface;
 
 pub use sc_executor_common::{
 	error,
-	wasm_runtime::{HeapAllocStrategy, DEFAULT_HEAP_ALLOC_PAGES, DEFAULT_HEAP_ALLOC_STRATEGY},
+	wasm_runtime::{
+		CallMode, HeapAllocStrategy, DEFAULT_HEAP_ALLOC_PAGES, DEFAULT_HEAP_ALLOC_STRATEGY,
+	},
 };
 pub use sc_executor_wasmtime::InstantiationStrategy as WasmtimeInstantiationStrategy;
 

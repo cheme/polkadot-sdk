@@ -31,7 +31,7 @@ use sc_executor_common::{
 		self, DataSegmentsSnapshot, ExposedMutableGlobalsSet, GlobalsSnapshot, RuntimeBlob,
 	},
 	util::checked_range,
-	wasm_runtime::{HeapAllocStrategy, InvokeMethod, WasmInstance, WasmModule},
+	wasm_runtime::{CallMode, HeapAllocStrategy, InvokeMethod, WasmInstance, WasmModule},
 };
 use sp_runtime_interface::unpack_ptr_and_len;
 use sp_wasm_interface::{HostFunctions, Pointer, Value, WordSize};
@@ -172,6 +172,7 @@ impl WasmtimeInstance {
 		method: InvokeMethod,
 		data: &[u8],
 		allocation_stats: &mut Option<AllocationStats>,
+		mode: CallMode,
 	) -> Result<Vec<u8>> {
 		match &mut self.strategy {
 			Strategy::LegacyInstanceReuse {
@@ -218,9 +219,10 @@ impl WasmInstance for WasmtimeInstance {
 		&mut self,
 		method: InvokeMethod,
 		data: &[u8],
+		mode: CallMode,
 	) -> (Result<Vec<u8>>, Option<AllocationStats>) {
 		let mut allocation_stats = None;
-		let result = self.call_impl(method, data, &mut allocation_stats);
+		let result = self.call_impl(method, data, &mut allocation_stats, mode);
 		(result, allocation_stats)
 	}
 

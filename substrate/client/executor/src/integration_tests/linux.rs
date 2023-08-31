@@ -21,7 +21,7 @@
 mod smaps;
 
 use super::mk_test_runtime;
-use crate::WasmExecutionMethod;
+use crate::{CallMode, WasmExecutionMethod};
 use codec::Encode as _;
 use sc_executor_common::wasm_runtime::DEFAULT_HEAP_ALLOC_STRATEGY;
 
@@ -71,11 +71,19 @@ fn memory_consumption(wasm_method: WasmExecutionMethod) {
 	}
 
 	instance
-		.call_export("test_dirty_plenty_memory", &(heap_base as u32, 1u32).encode())
+		.call_export(
+			"test_dirty_plenty_memory",
+			&(heap_base as u32, 1u32).encode(),
+			CallMode::Single,
+		)
 		.unwrap();
 	let probe_1 = probe_rss(&*instance);
 	instance
-		.call_export("test_dirty_plenty_memory", &(heap_base as u32, 1024u32).encode())
+		.call_export(
+			"test_dirty_plenty_memory",
+			&(heap_base as u32, 1024u32).encode(),
+			CallMode::Single,
+		)
 		.unwrap();
 	let probe_2 = probe_rss(&*instance);
 

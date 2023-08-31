@@ -40,7 +40,7 @@ use sp_trie::{LayoutV1 as Layout, TrieConfiguration};
 use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
 
-use crate::WasmExecutionMethod;
+use crate::{CallMode, WasmExecutionMethod};
 
 pub type TestExternalities = CoreTestExternalities<BlakeTwo256>;
 type HostFunctions = sp_io::SubstrateHostFunctions;
@@ -489,14 +489,26 @@ fn returns_mutable_static(wasm_method: WasmExecutionMethod) {
 		mk_test_runtime(wasm_method, HeapAllocStrategy::Dynamic { maximum_pages: Some(1024) });
 
 	let mut instance = runtime.new_instance().unwrap();
-	let res = instance.call_export("returns_mutable_static", &[0]).unwrap();
+	let res = instance.call_export("returns_mutable_static", &[0], CallMode::Single).unwrap();
 	assert_eq!(33, u64::decode(&mut &res[..]).unwrap());
 
 	// We expect that every invocation will need to return the initial
 	// value plus one. If the value increases more than that then it is
 	// a sign that the wasm runtime preserves the memory content.
-	let res = instance.call_export("returns_mutable_static", &[0]).unwrap();
+	let res = instance.call_export("returns_mutable_static", &[0], CallMode::Single).unwrap();
 	assert_eq!(33, u64::decode(&mut &res[..]).unwrap());
+
+
+	let res = instance.call_export("returns_mutable_static", &[0], CallMode::First).unwrap();
+	assert_eq!(33, u64::decode(&mut &res[..]).unwrap());
+	// need a stop first
+	assert!(instance.call_export("returns_mutable_static", &[0], CallMode::First).is_err());
+	let res = instance.call_export("returns_mutable_static", &[0], CallMode::Next).unwrap();
+	assert_eq!(34, u64::decode(&mut &res[..]).unwrap());
+	let res = instance.call_export("returns_mutable_static", &[0], CallMode::Next).unwrap();
+	assert_eq!(35, u64::decode(&mut &res[..]).unwrap());
+	// Terminate on an error: TODO assert a specific one.
+	assert!(instance.call_export("returns_mutable_static", &[0], CallMode::Stop).is_err());
 }
 
 test_wasm_execution!(returns_mutable_static_bss);
@@ -505,13 +517,13 @@ fn returns_mutable_static_bss(wasm_method: WasmExecutionMethod) {
 		mk_test_runtime(wasm_method, HeapAllocStrategy::Dynamic { maximum_pages: Some(1024) });
 
 	let mut instance = runtime.new_instance().unwrap();
-	let res = instance.call_export("returns_mutable_static_bss", &[0]).unwrap();
+	let res = instance.call_export("returns_mutable_static_bss", &[0], CallMode::Single).unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 
 	// We expect that every invocation will need to return the initial
 	// value plus one. If the value increases more than that then it is
 	// a sign that the wasm runtime preserves the memory content.
-	let res = instance.call_export("returns_mutable_static_bss", &[0]).unwrap();
+	let res = instance.call_export("returns_mutable_static_bss", &[0], CallMode::Single).unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 }
 
@@ -536,11 +548,11 @@ fn restoration_of_globals(wasm_method: WasmExecutionMethod) {
 	let mut instance = runtime.new_instance().unwrap();
 
 	// On the first invocation we allocate approx. 768KB (75%) of stack and then trap.
-	let res = instance.call_export("allocates_huge_stack_array", &true.encode());
+	let res = instance.call_export("allocates_huge_stack_array", &true.encode(), CallMode::Single);
 	assert!(res.is_err());
 
 	// On the second invocation we allocate yet another 768KB (75%) of stack
-	let res = instance.call_export("allocates_huge_stack_array", &false.encode());
+	let res = instance.call_export("allocates_huge_stack_array", &false.encode(), CallMode::Single);
 	assert!(res.is_ok());
 }
 
@@ -635,7 +647,7 @@ fn allocate_two_gigabyte(wasm_method: WasmExecutionMethod) {
 	let runtime = mk_test_runtime(wasm_method, HeapAllocStrategy::Dynamic { maximum_pages: None });
 
 	let mut instance = runtime.new_instance().unwrap();
-	let res = instance.call_export("allocate_two_gigabyte", &[0]).unwrap();
+	let res = instance.call_export("allocate_two_gigabyte", &[0], CallMode::Single).unwrap();
 	assert_eq!(10 * 1024 * 1024 * 205, u32::decode(&mut &res[..]).unwrap());
 }
 
@@ -709,10 +721,10 @@ fn memory_is_cleared_between_invocations(wasm_method: WasmExecutionMethod) {
 	.unwrap();
 
 	let mut instance = runtime.new_instance().unwrap();
-	let res = instance.call_export("returns_no_bss_mutable_static", &[0]).unwrap();
+	let res = instance.call_export("returns_no_bss_mutable_static", &[0], CallMode::Single).unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 
-	let res = instance.call_export("returns_no_bss_mutable_static", &[0]).unwrap();
+	let res = instance.call_export("returns_no_bss_mutable_static", &[0], CallMode::Single).unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 }
 

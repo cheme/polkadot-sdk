@@ -23,6 +23,7 @@
 
 use crate::error::{Error, WasmError};
 
+use crate::CallMode;
 use codec::Decode;
 use parking_lot::Mutex;
 use sc_executor_common::{
@@ -419,7 +420,7 @@ where
 			// runtime will be dropped.
 			let runtime = AssertUnwindSafe(runtime.as_ref());
 			crate::executor::with_externalities_safe(&mut **ext, move || {
-				runtime.new_instance()?.call("Core_version".into(), &[])
+				runtime.new_instance()?.call("Core_version".into(), &[], CallMode::Single)
 			})
 			.map_err(|_| WasmError::Instantiation("panic in call to get runtime version".into()))?
 		};

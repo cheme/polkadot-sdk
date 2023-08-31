@@ -666,7 +666,9 @@ impl OverlayedChangeSetBlob {
 
 		let (chunk_start, chunk_start_offset) = super::blob_chunk_start_index(start);
 		let (chunk_end, chunk_end_offset) = super::blob_chunk_end_index(end);
-		let result: Cow<[u8]> = if chunk_start == chunk_end || (chunk_end_offset == 0 && chunk_end == chunk_start + 1) {
+		let result: Cow<[u8]> = if chunk_start == chunk_end ||
+			(chunk_end_offset == 0 && chunk_end == chunk_start + 1)
+		{
 			let chunk = self.get(chunk_start).value_ref();
 			if chunk_end_offset == 0 {
 				chunk[chunk_start_offset..].into()

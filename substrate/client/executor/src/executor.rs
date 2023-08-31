@@ -19,7 +19,7 @@
 use crate::{
 	error::{Error, Result},
 	wasm_runtime::{RuntimeCache, WasmExecutionMethod},
-	RuntimeVersionOf,
+	CallMode, RuntimeVersionOf,
 };
 
 use std::{
@@ -433,8 +433,11 @@ where
 		let mut allocation_stats_out = AssertUnwindSafe(allocation_stats_out);
 
 		with_externalities_safe(&mut **ext, move || {
-			let (result, allocation_stats) =
-				instance.call_with_allocation_stats(export_name.into(), call_data);
+			let (result, allocation_stats) = instance.call_with_allocation_stats(
+				export_name.into(),
+				call_data,
+				CallMode::Single,
+			);
 			**allocation_stats_out = allocation_stats;
 			result
 		})
@@ -520,7 +523,9 @@ where
 			ext,
 			heap_alloc_strategy,
 			|_, mut instance, _onchain_version, mut ext| {
-				with_externalities_safe(&mut **ext, move || instance.call_export(method, data))
+				with_externalities_safe(&mut **ext, move || {
+					instance.call_export(method, data, CallMode::Single)
+				})
 			},
 		);
 
@@ -639,6 +644,7 @@ impl<D: NativeExecutionDispatch> GetNativeVersion for NativeElseWasmExecutor<D> 
 impl<D: NativeExecutionDispatch + 'static> CodeExecutor for NativeElseWasmExecutor<D> {
 	type Error = Error;
 
+	// TODO instantiate method return in instance
 	fn call(
 		&self,
 		ext: &mut dyn Externalities,
@@ -701,7 +707,9 @@ impl<D: NativeExecutionDispatch + 'static> CodeExecutor for NativeElseWasmExecut
 						);
 					}
 
-					with_externalities_safe(&mut **ext, move || instance.call_export(method, data))
+					with_externalities_safe(&mut **ext, move || {
+						instance.call_export(method, data, CallMode::Single)
+					})
 				}
 			},
 		);
