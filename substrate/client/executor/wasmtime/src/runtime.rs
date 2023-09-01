@@ -156,7 +156,7 @@ impl WasmModule for WasmtimeRuntime {
 			}),
 		};
 
-		Ok(Box::new(WasmtimeInstance { strategy }))
+		Ok(Box::new(WasmtimeInstance { strategy, running: None }))
 	}
 }
 
@@ -164,6 +164,8 @@ impl WasmModule for WasmtimeRuntime {
 /// to execute the compiled code.
 pub struct WasmtimeInstance {
 	strategy: Strategy,
+	// TODO should be part of strategy variant??.
+	running: Option<Option<InstanceWrapper>>,
 }
 
 impl WasmtimeInstance {
@@ -174,43 +176,89 @@ impl WasmtimeInstance {
 		allocation_stats: &mut Option<AllocationStats>,
 		mode: CallMode,
 	) -> Result<Vec<u8>> {
-		match &mut self.strategy {
-			Strategy::LegacyInstanceReuse {
-				ref mut instance_wrapper,
-				globals_snapshot,
-				data_segments_snapshot,
-				heap_base,
-			} => {
-				let entrypoint = instance_wrapper.resolve_entrypoint(method)?;
+		let mut alloc_instance = None;
 
-				data_segments_snapshot.apply(|offset, contents| {
-					util::write_memory_from(
-						instance_wrapper.store_mut(),
-						Pointer::new(offset),
-						contents,
-					)
-				})?;
-				globals_snapshot.apply(&mut InstanceGlobals { instance: instance_wrapper });
-				let allocator = FreeingBumpHeapAllocator::new(*heap_base);
-
-				let result =
-					perform_call(data, instance_wrapper, entrypoint, allocator, allocation_stats);
-
-				// Signal to the OS that we are done with the linear memory and that it can be
-				// reclaimed.
+		if matches!(mode, CallMode::Stop) {
+			if let Strategy::LegacyInstanceReuse { instance_wrapper, .. } = &mut self.strategy {
 				instance_wrapper.decommit();
-
-				result
-			},
-			Strategy::RecreateInstance(ref mut instance_creator) => {
-				let mut instance_wrapper = instance_creator.instantiate()?;
-				let heap_base = instance_wrapper.extract_heap_base()?;
-				let entrypoint = instance_wrapper.resolve_entrypoint(method)?;
-
-				let allocator = FreeingBumpHeapAllocator::new(heap_base);
-				perform_call(data, &mut instance_wrapper, entrypoint, allocator, allocation_stats)
-			},
+			}
+			return Err(Error::InstanceStopped)
 		}
+
+		let (instance, allocator, entrypoint) =
+			if matches!(mode, CallMode::First | CallMode::Single) {
+				if self.running.is_some() {
+					return Err(Error::InstanceInvalidState)
+				}
+				match &mut self.strategy {
+					Strategy::LegacyInstanceReuse {
+						instance_wrapper,
+						globals_snapshot,
+						data_segments_snapshot,
+						heap_base,
+					} => {
+						let entrypoint = instance_wrapper.resolve_entrypoint(method)?;
+
+						data_segments_snapshot.apply(|offset, contents| {
+							util::write_memory_from(
+								instance_wrapper.store_mut(),
+								Pointer::new(offset),
+								contents,
+							)
+						})?;
+						globals_snapshot.apply(&mut InstanceGlobals { instance: instance_wrapper });
+						let allocator = FreeingBumpHeapAllocator::new(*heap_base);
+
+						(instance_wrapper, Some(allocator), entrypoint)
+					},
+					Strategy::RecreateInstance(ref mut instance_creator) => {
+						let mut instance_wrapper = instance_creator.instantiate()?;
+						let heap_base = instance_wrapper.extract_heap_base()?;
+						let entrypoint = instance_wrapper.resolve_entrypoint(method)?;
+
+						let allocator = FreeingBumpHeapAllocator::new(heap_base);
+						alloc_instance = Some(instance_wrapper);
+						(alloc_instance.as_mut().expect("init above"), Some(allocator), entrypoint)
+					},
+				}
+			} else {
+				if let Some(instance) = self.running.take() {
+					alloc_instance = instance;
+					let instance = if let Some(instance) = &mut alloc_instance {
+						instance
+					} else {
+						if let Strategy::LegacyInstanceReuse { instance_wrapper, .. } =
+							&mut self.strategy
+						{
+							instance_wrapper
+						} else {
+							return Err(Error::InstanceInvalidState)
+						}
+					};
+					let entrypoint = instance.resolve_entrypoint(method)?;
+
+					// already store in instance.
+					let allocator = None;
+					(instance, allocator, entrypoint)
+				} else {
+					return Err(Error::InstanceInvalidState)
+				}
+			};
+
+		let finish = matches!(mode, CallMode::Single);
+		let result = perform_call(data, instance, entrypoint, allocator, allocation_stats, finish);
+
+		if matches!(mode, CallMode::First | CallMode::Next) {
+			self.running = Some(alloc_instance);
+		}
+
+		if finish {
+			if let Strategy::LegacyInstanceReuse { instance_wrapper, .. } = &mut self.strategy {
+				instance_wrapper.decommit();
+			}
+		}
+
+		result
 	}
 }
 
@@ -772,26 +820,32 @@ fn perform_call(
 	data: &[u8],
 	instance_wrapper: &mut InstanceWrapper,
 	entrypoint: EntryPoint,
-	mut allocator: FreeingBumpHeapAllocator,
+	allocator: Option<FreeingBumpHeapAllocator>,
 	allocation_stats: &mut Option<AllocationStats>,
+	finish: bool,
 ) -> Result<Vec<u8>> {
-	let (data_ptr, data_len) = inject_input_data(instance_wrapper, &mut allocator, data)?;
+	if let Some(allocator) = allocator {
+		let host_state = HostState::new(allocator);
 
-	let host_state = HostState::new(allocator);
+		// Set the host state before calling into wasm.
+		instance_wrapper.store_mut().data_mut().host_state = Some(host_state);
+	}
 
-	// Set the host state before calling into wasm.
-	instance_wrapper.store_mut().data_mut().host_state = Some(host_state);
+	let (data_ptr, data_len) = inject_input_data(instance_wrapper, data)?;
 
 	let ret = entrypoint
 		.call(instance_wrapper.store_mut(), data_ptr, data_len)
 		.map(unpack_ptr_and_len);
 
 	// Reset the host state
-	let host_state = instance_wrapper.store_mut().data_mut().host_state.take().expect(
+	let host_state = instance_wrapper.store_mut().data_mut().host_state.as_mut().expect(
 		"the host state is always set before calling into WASM so it can't be None here; qed",
 	);
 	*allocation_stats = Some(host_state.allocation_stats());
 
+	if finish {
+		instance_wrapper.store_mut().data_mut().host_state = None;
+	}
 	let (output_ptr, output_len) = ret?;
 	let output = extract_output_data(instance_wrapper, output_ptr, output_len)?;
 
@@ -800,13 +854,20 @@ fn perform_call(
 
 fn inject_input_data(
 	instance: &mut InstanceWrapper,
-	allocator: &mut FreeingBumpHeapAllocator,
 	data: &[u8],
 ) -> Result<(Pointer<u8>, WordSize)> {
 	let mut ctx = instance.store_mut();
-	let memory = ctx.data().memory();
+	let host_state = ctx.data_mut().host_state.as_mut().expect(
+		"the host state is always set before calling into WASM so it can't be None here; qed",
+	);
+	let mut allocator = host_state.allocator.take().ok_or(Error::InstanceInvalidState)?;
 	let data_len = data.len() as WordSize;
+	let memory = ctx.data().memory.expect("memory is always set; qed");
 	let data_ptr = allocator.allocate(&mut MemoryWrapper(&memory, &mut ctx), data_len)?;
+	let host_state = ctx.data_mut().host_state.as_mut().expect(
+		"the host state is always set before calling into WASM so it can't be None here; qed",
+	);
+	host_state.allocator = Some(allocator);
 	util::write_memory_from(instance.store_mut(), data_ptr, data)?;
 	Ok((data_ptr, data_len))
 }

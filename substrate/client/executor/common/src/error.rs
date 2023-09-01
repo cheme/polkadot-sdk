@@ -99,6 +99,12 @@ pub enum Error {
 
 	#[error("Output exceeds bounds of wasm memory")]
 	OutputExceedsBounds,
+
+	#[error("Executor instance in invalid state")]
+	InstanceInvalidState,
+
+	#[error("Stop execution, not an error.")]
+	InstanceStopped,
 }
 
 impl From<&'static str> for Error {

@@ -35,7 +35,7 @@ pub struct HostState {
 	/// This is stored as an `Option` as we need to temporarly set this to `None` when we are
 	/// allocating/deallocating memory. The problem being that we can only mutable access `caller`
 	/// once.
-	allocator: Option<FreeingBumpHeapAllocator>,
+	pub(crate) allocator: Option<FreeingBumpHeapAllocator>,
 	panic_message: Option<String>,
 }
 

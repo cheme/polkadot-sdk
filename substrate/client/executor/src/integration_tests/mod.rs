@@ -498,7 +498,6 @@ fn returns_mutable_static(wasm_method: WasmExecutionMethod) {
 	let res = instance.call_export("returns_mutable_static", &[0], CallMode::Single).unwrap();
 	assert_eq!(33, u64::decode(&mut &res[..]).unwrap());
 
-
 	let res = instance.call_export("returns_mutable_static", &[0], CallMode::First).unwrap();
 	assert_eq!(33, u64::decode(&mut &res[..]).unwrap());
 	// need a stop first
@@ -517,13 +516,17 @@ fn returns_mutable_static_bss(wasm_method: WasmExecutionMethod) {
 		mk_test_runtime(wasm_method, HeapAllocStrategy::Dynamic { maximum_pages: Some(1024) });
 
 	let mut instance = runtime.new_instance().unwrap();
-	let res = instance.call_export("returns_mutable_static_bss", &[0], CallMode::Single).unwrap();
+	let res = instance
+		.call_export("returns_mutable_static_bss", &[0], CallMode::Single)
+		.unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 
 	// We expect that every invocation will need to return the initial
 	// value plus one. If the value increases more than that then it is
 	// a sign that the wasm runtime preserves the memory content.
-	let res = instance.call_export("returns_mutable_static_bss", &[0], CallMode::Single).unwrap();
+	let res = instance
+		.call_export("returns_mutable_static_bss", &[0], CallMode::Single)
+		.unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 }
 
@@ -721,10 +724,14 @@ fn memory_is_cleared_between_invocations(wasm_method: WasmExecutionMethod) {
 	.unwrap();
 
 	let mut instance = runtime.new_instance().unwrap();
-	let res = instance.call_export("returns_no_bss_mutable_static", &[0], CallMode::Single).unwrap();
+	let res = instance
+		.call_export("returns_no_bss_mutable_static", &[0], CallMode::Single)
+		.unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 
-	let res = instance.call_export("returns_no_bss_mutable_static", &[0], CallMode::Single).unwrap();
+	let res = instance
+		.call_export("returns_no_bss_mutable_static", &[0], CallMode::Single)
+		.unwrap();
 	assert_eq!(1, u64::decode(&mut &res[..]).unwrap());
 }
 
