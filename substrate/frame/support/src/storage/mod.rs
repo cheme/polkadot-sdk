@@ -32,7 +32,7 @@ use crate::{
 	},
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
-use sp_core::storage::{
+pub use sp_core::storage::{
 	transient::{Hash32Algorithm, Mode as TransientMode, Root32Structure},
 	Blob as BlobInfo, ChildInfo, OrderedMap as OrdMapInfo, BLOB_CHUNK_SIZE,
 };

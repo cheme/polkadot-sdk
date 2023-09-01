@@ -387,4 +387,32 @@ mod tests {
 		assert!(proof_without_panic > proof_empty_block);
 		assert_eq!(proof_empty_block, proof_with_panic);
 	}
+
+	#[test]
+	fn transient_persists_building() {
+		let builder = substrate_test_runtime_client::TestClientBuilder::new();
+		let backend = builder.backend();
+		let client = builder.build();
+
+		let mut block_builder = BlockBuilder::new(
+			&client,
+			client.info().best_hash,
+			client.info().best_number,
+			RecordProof::Yes,
+			Default::default(),
+			&*backend,
+		)
+		.unwrap();
+
+		block_builder.push(ExtrinsicBuilder::new_write_transient(123).build()).unwrap();
+		block_builder.push(ExtrinsicBuilder::new_assert_transient(123).build()).unwrap();
+
+		/*
+		let block = block_builder.build().unwrap();
+
+		let proof_without_panic = block.proof.expect("Proof is build on request").encoded_size();
+
+		assert!(proof_without_panic > 0);
+		*/
+	}
 }

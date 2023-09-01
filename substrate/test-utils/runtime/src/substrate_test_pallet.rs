@@ -189,6 +189,36 @@ pub mod pallet {
 		pub fn read_and_panic(_origin: OriginFor<T>, count: u32) -> DispatchResult {
 			Self::execute_read(count, true)
 		}
+
+		/// Set a transient value.
+		#[pallet::call_index(12)]
+		#[pallet::weight(0)]
+		pub fn write_transient(_origin: OriginFor<T>, value: u8) -> DispatchResult {
+			if !frame_support::storage::map_exists(&b"test_map"[..]) {
+				frame_support::storage::map_new(
+					&b"test_map"[..],
+					frame_support::storage::TransientMode::Drop,
+				);
+			}
+			assert!(frame_support::storage::map_insert_item(
+				&b"test_map"[..],
+				&b"test_key"[..],
+				&[value][..],
+			));
+			Ok(())
+		}
+
+		/// Read a transient value, panic if its value differ to the parameter one..
+		#[pallet::call_index(13)]
+		#[pallet::weight(0)]
+		pub fn assert_transient(_origin: OriginFor<T>, value: u8) -> DispatchResult {
+			assert!(
+				frame_support::storage::map_get_item(&b"test_map"[..], &b"test_key"[..], None, 0)
+					.as_ref()
+					.map(AsRef::as_ref) == Some(&[value][..])
+			);
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -227,6 +257,8 @@ pub mod pallet {
 				// Some tests do not need to be complicated with signer and nonce, some need
 				// reproducible block hash (call signature can't be there).
 				// Offchain testing requires storage_change.
+				Call::write_transient { .. } |
+				Call::assert_transient { .. } |
 				Call::deposit_log_digest_item { .. } |
 				Call::storage_change { .. } |
 				Call::read { .. } |

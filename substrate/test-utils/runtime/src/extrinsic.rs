@@ -164,6 +164,16 @@ impl ExtrinsicBuilder {
 		Self::new_unsigned(PalletCall::read { count })
 	}
 
+	/// Create builder for `PalletCall::write_transient` call using given parameters
+	pub fn new_write_transient(value: u8) -> Self {
+		Self::new_unsigned(PalletCall::write_transient { value })
+	}
+
+	/// Create builder for `PalletCall::assert_transient` call using given parameters
+	pub fn new_assert_transient(value: u8) -> Self {
+		Self::new_unsigned(PalletCall::assert_transient { value })
+	}
+
 	/// Create builder for `PalletCall::read` call using given parameters
 	pub fn new_read_and_panic(count: u32) -> Self {
 		Self::new_unsigned(PalletCall::read_and_panic { count })
