@@ -53,7 +53,7 @@ where
 		executor: E,
 		client_config: ClientConfig<Block>,
 		execution_extensions: ExecutionExtensions<Block>,
-	) -> sp_blockchain::Result<Self> {
+	) -> sp_blockchain::Result<Self> { // TODO in this put option wasminstance persistence: as optional + conf: single or sequence then logic in calls.
 		let wasm_override = client_config
 			.wasm_runtime_overrides
 			.as_ref()
@@ -192,7 +192,7 @@ where
 		)
 		.set_parent_hash(at_hash);
 
-		sm.execute().map_err(Into::into)
+		sm.execute().map_err(Into::into) // TODO same call on existing instance if any.
 	}
 
 	fn contextual_call(
@@ -238,7 +238,7 @@ where
 					call_context,
 				)
 				.set_parent_hash(at_hash);
-				state_machine.execute()
+				state_machine.execute() // TODO here execute with a given instance from self if exists.
 			},
 			None => {
 				let mut state_machine = StateMachine::<_, _, IoHashers, _>::new(
@@ -252,7 +252,7 @@ where
 					call_context,
 				)
 				.set_parent_hash(at_hash);
-				state_machine.execute()
+				state_machine.execute() // TODO same
 			},
 		}
 		.map_err(Into::into)
