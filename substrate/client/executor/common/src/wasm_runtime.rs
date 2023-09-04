@@ -22,6 +22,7 @@ use crate::error::Error;
 use sp_wasm_interface::Value;
 
 pub use sc_allocator::AllocationStats;
+pub use sp_core::traits::CallMode;
 
 /// Default heap allocation strategy.
 pub const DEFAULT_HEAP_ALLOC_STRATEGY: HeapAllocStrategy =
@@ -76,23 +77,6 @@ impl<'a> From<&'a str> for InvokeMethod<'a> {
 pub trait WasmModule: Sync + Send {
 	/// Create a new instance.
 	fn new_instance(&self) -> Result<Box<dyn WasmInstance>, Error>;
-}
-
-/// Kind of call of an instance.
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum CallMode {
-	/// Single call on instance.
-	Single,
-
-	/// First call on instance.
-	First,
-
-	/// Subsequent call on instance.
-	Next,
-
-	/// Last call on instance (no call actually happen).
-	/// Not needed if last call was `CallMode::Single`.
-	Stop,
 }
 
 /// A trait that defines an abstract wasm module instance.

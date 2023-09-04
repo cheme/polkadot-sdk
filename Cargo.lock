@@ -15327,6 +15327,7 @@ name = "sc-executor-common"
 version = "0.10.0-dev"
 dependencies = [
  "sc-allocator",
+ "sp-core",
  "sp-maybe-compressed-blob",
  "sp-wasm-interface",
  "thiserror",

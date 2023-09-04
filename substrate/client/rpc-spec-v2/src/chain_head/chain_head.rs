@@ -47,7 +47,7 @@ use sc_client_api::{
 };
 use sp_api::CallApiAt;
 use sp_blockchain::{Error as BlockChainError, HeaderBackend, HeaderMetadata};
-use sp_core::{traits::CallContext, Bytes};
+use sp_core::{traits::{CallContext, CallMode}, Bytes};
 use sp_runtime::traits::Block as BlockT;
 use std::{marker::PhantomData, sync::Arc, time::Duration};
 
@@ -420,7 +420,7 @@ where
 		let event = self
 			.client
 			.executor()
-			.call(hash, &function, &call_parameters, CallContext::Offchain)
+			.call(hash, &function, &call_parameters, CallContext::Offchain, CallMode::Single)
 			.map(|result| {
 				FollowEvent::<Block::Hash>::OperationCallDone(OperationCallDone {
 					operation_id: operation_id.clone(),

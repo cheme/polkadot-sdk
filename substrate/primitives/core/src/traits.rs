@@ -36,6 +36,23 @@ pub enum CallContext {
 	Onchain,
 }
 
+/// Kind of call of an instance.
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum CallMode {
+	/// Single call on instance.
+	Single,
+
+	/// First call on instance.
+	First,
+
+	/// Subsequent call on instance.
+	Next,
+
+	/// Last call on instance (no call actually happen).
+	/// Not needed if last call was `CallMode::Single`.
+	Stop,
+}
+
 /// Code execution engine.
 pub trait CodeExecutor: Sized + Send + Sync + ReadRuntimeVersion + Clone + 'static {
 	/// Externalities error type.
@@ -53,6 +70,7 @@ pub trait CodeExecutor: Sized + Send + Sync + ReadRuntimeVersion + Clone + 'stat
 		data: &[u8],
 		use_native: bool,
 		context: CallContext,
+		mode: CallMode,
 	) -> (Result<Vec<u8>, Self::Error>, bool);
 }
 

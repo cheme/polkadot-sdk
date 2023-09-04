@@ -17,6 +17,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 thiserror = "1.0.30"
 wasm-instrument = "0.3"
 sc-allocator = { path = "../../allocator" }
+sp-core = { path = "../../../primitives/core" }
 sp-maybe-compressed-blob = { path = "../../../primitives/maybe-compressed-blob" }
 sp-wasm-interface = { path = "../../../primitives/wasm-interface" }
 

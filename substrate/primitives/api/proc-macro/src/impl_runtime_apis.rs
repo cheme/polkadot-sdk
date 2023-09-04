@@ -271,6 +271,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				changes: std::cell::RefCell<#crate_::Changes<#crate_::HashingFor<Block>>>,
 				recorder: std::option::Option<#crate_::ProofRecorder<Block>>,
 				call_context: #crate_::CallContext,
+				call_mode: #crate_::CallMode,
 				extensions: std::cell::RefCell<#crate_::Extensions>,
 				extensions_generated_for: std::cell::RefCell<std::option::Option<Block::Hash>>,
 			}
@@ -360,6 +361,10 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 					self.call_context = call_context;
 				}
 
+				fn set_call_mode(&mut self, call_mode: #crate_::CallMode) {
+					self.call_mode = call_mode;
+				}
+
 				fn register_extension<E: #crate_::Extension>(&mut self, extension: E) {
 					std::cell::RefCell::borrow_mut(&self.extensions).register(extension);
 				}
@@ -381,6 +386,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 						changes: std::default::Default::default(),
 						recorder: std::default::Default::default(),
 						call_context: #crate_::CallContext::Offchain,
+						call_mode: #crate_::CallMode::Single,
 						extensions: std::default::Default::default(),
 						extensions_generated_for: std::default::Default::default(),
 					}.into()
@@ -595,6 +601,7 @@ impl<'a> ApiRuntimeImplToApiRuntimeApiImpl<'a> {
 						arguments: params,
 						overlayed_changes: &self.changes,
 						call_context: self.call_context,
+						call_mode: self.call_mode,
 						recorder: &self.recorder,
 						extensions: &self.extensions,
 					};

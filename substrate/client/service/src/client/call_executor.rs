@@ -17,14 +17,16 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use super::{client::ClientConfig, wasm_override::WasmOverride, wasm_substitutes::WasmSubstitutes};
+use parking_lot::Mutex;
 use sc_client_api::{
 	backend, call_executor::CallExecutor, execution_extensions::ExecutionExtensions, HeaderBackend,
 };
-use sc_executor::{RuntimeVersion, RuntimeVersionOf};
+use sc_executor::{RuntimeVersion, RuntimeVersionOf, WasmInstance};
 use sp_api::ProofRecorder;
 use sp_core::traits::{CallContext, CodeExecutor, RuntimeCode};
 use sp_externalities::Extensions;
 use sp_runtime::{
+	traits::CallMode,
 	generic::BlockId,
 	traits::{Block as BlockT, HashingFor},
 	IoHashers,
@@ -36,10 +38,11 @@ use std::{cell::RefCell, sync::Arc};
 /// data from local backend.
 pub struct LocalCallExecutor<Block: BlockT, B, E> {
 	backend: Arc<B>,
-	executor: E,
+	pub executor: E, // TODO remove pub and set call mode??
 	wasm_override: Arc<Option<WasmOverride>>,
 	wasm_substitutes: WasmSubstitutes<Block, E, B>,
 	execution_extensions: Arc<ExecutionExtensions<Block>>,
+	multiple_calls: bool, // if true can use wasm instance or native unimplemented.
 }
 
 impl<Block: BlockT, B, E> LocalCallExecutor<Block, B, E>
@@ -53,7 +56,9 @@ where
 		executor: E,
 		client_config: ClientConfig<Block>,
 		execution_extensions: ExecutionExtensions<Block>,
-	) -> sp_blockchain::Result<Self> { // TODO in this put option wasminstance persistence: as optional + conf: single or sequence then logic in calls.
+	) -> sp_blockchain::Result<Self> {
+		// TODO in this put option wasminstance persistence: as optional + conf: single or sequence
+		// then logic in calls.
 		let wasm_override = client_config
 			.wasm_runtime_overrides
 			.as_ref()
@@ -72,6 +77,7 @@ where
 			wasm_override: Arc::new(wasm_override),
 			wasm_substitutes,
 			execution_extensions: Arc::new(execution_extensions),
+			multiple_calls: false,
 		})
 	}
 
@@ -142,6 +148,7 @@ where
 			wasm_override: self.wasm_override.clone(),
 			wasm_substitutes: self.wasm_substitutes.clone(),
 			execution_extensions: self.execution_extensions.clone(),
+			multiple_calls: self.multiple_calls.clone(),
 		}
 	}
 }
@@ -166,6 +173,7 @@ where
 		method: &str,
 		call_data: &[u8],
 		context: CallContext,
+		mode: CallMode,
 	) -> sp_blockchain::Result<Vec<u8>> {
 		let mut changes = Changes::default();
 		let at_number =
@@ -192,7 +200,7 @@ where
 		)
 		.set_parent_hash(at_hash);
 
-		sm.execute().map_err(Into::into) // TODO same call on existing instance if any.
+		sm.execute(mode).map_err(Into::into) // TODO same call on existing instance if any.
 	}
 
 	fn contextual_call(
@@ -203,6 +211,7 @@ where
 		changes: &RefCell<Changes<HashingFor<Block>>>,
 		recorder: &Option<ProofRecorder<Block>>,
 		call_context: CallContext,
+		mode: CallMode,
 		extensions: &RefCell<Extensions>,
 	) -> Result<Vec<u8>, sp_blockchain::Error> {
 		let state = self.backend.state_at(at_hash)?;
@@ -238,7 +247,7 @@ where
 					call_context,
 				)
 				.set_parent_hash(at_hash);
-				state_machine.execute() // TODO here execute with a given instance from self if exists.
+				state_machine.execute(mode)
 			},
 			None => {
 				let mut state_machine = StateMachine::<_, _, IoHashers, _>::new(
@@ -252,7 +261,7 @@ where
 					call_context,
 				)
 				.set_parent_hash(at_hash);
-				state_machine.execute() // TODO same
+				state_machine.execute(mode)
 			},
 		}
 		.map_err(Into::into)

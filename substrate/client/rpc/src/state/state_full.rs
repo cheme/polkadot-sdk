@@ -46,7 +46,7 @@ use sp_core::{
 	storage::{
 		ChildInfo, ChildType, PrefixedStorageKey, StorageChangeSet, StorageData, StorageKey,
 	},
-	traits::CallContext,
+	traits::{CallContext, CallMode},
 	Bytes,
 };
 use sp_runtime::traits::Block as BlockT;
@@ -198,7 +198,7 @@ where
 			.and_then(|block| {
 				self.client
 					.executor()
-					.call(block, &method, &call_data, CallContext::Offchain)
+					.call(block, &method, &call_data, CallContext::Offchain, CallMode::Single)
 					.map(Into::into)
 			})
 			.map_err(client_err)

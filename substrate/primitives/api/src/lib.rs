@@ -84,7 +84,7 @@ pub use sp_core::offchain;
 pub use sp_core::to_substrate_wasm_fn_return_value;
 #[doc(hidden)]
 #[cfg(feature = "std")]
-pub use sp_core::traits::CallContext;
+pub use sp_core::traits::{CallContext, CallMode};
 use sp_core::OpaqueMetadata;
 #[doc(hidden)]
 #[cfg(feature = "std")]
@@ -618,6 +618,9 @@ pub trait ApiExt<Block: BlockT> {
 	/// Set the [`CallContext`] to be used by the runtime api calls done by this instance.
 	fn set_call_context(&mut self, call_context: CallContext);
 
+	/// Set the [`CallMode`] to be used by the next runtime api calls done by this instance.
+	fn set_call_mode(&mut self, call_context: CallMode);
+
 	/// Register an [`Extension`] that will be accessible while executing a runtime api call.
 	fn register_extension<E: Extension>(&mut self, extension: E);
 }
@@ -639,6 +642,8 @@ pub struct CallApiAtParams<'a, Block: BlockT> {
 	pub recorder: &'a Option<ProofRecorder<Block>>,
 	/// The extensions that should be used for this call.
 	pub extensions: &'a RefCell<Extensions>,
+	/// Mode
+	pub call_mode: CallMode,
 }
 
 /// Something that can call into the an api at a given block.

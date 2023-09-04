@@ -164,7 +164,7 @@ mod execution {
 	use sp_core::{
 		hexdisplay::HexDisplay,
 		storage::{ChildInfo, ChildType, PrefixedStorageKey},
-		traits::{CallContext, CodeExecutor, RuntimeCode},
+		traits::{CallContext, CodeExecutor, RuntimeCode, CallMode},
 		Hasher, Hashers,
 	};
 	use sp_externalities::Extensions;
@@ -274,7 +274,10 @@ mod execution {
 		/// blocks (e.g. a transaction at a time), ensure a different method is used.
 		///
 		/// Returns the SCALE encoded result of the executed function.
-		pub fn execute(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
+		pub fn execute(
+			&mut self,
+			mode: CallMode,
+		) -> Result<Vec<u8>, Box<dyn Error>> {
 			self.overlay
 				.enter_runtime()
 				.expect("StateMachine is never called from the runtime; qed");
@@ -295,7 +298,15 @@ mod execution {
 
 			let result = self
 				.exec
-				.call(&mut ext, self.runtime_code, self.method, self.call_data, false, self.context)
+				.call(
+					&mut ext,
+					self.runtime_code,
+					self.method,
+					self.call_data,
+					false,
+					self.context,
+					mode,
+				)
 				.0;
 
 			self.overlay
@@ -378,7 +389,7 @@ mod execution {
 			runtime_code,
 			CallContext::Offchain,
 		)
-		.execute()?;
+		.execute(CallMode::Single)?; // TODO call mode in param??
 
 		let proof = proving_backend
 			.extract_proof()
@@ -439,7 +450,7 @@ mod execution {
 			runtime_code,
 			CallContext::Offchain,
 		)
-		.execute()
+		.execute(CallMode::Single)
 	}
 
 	/// Generate storage read proof.

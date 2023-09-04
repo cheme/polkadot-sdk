@@ -51,6 +51,8 @@ use sp_std::{self, fmt::Debug, prelude::*};
 use std::fmt::Display;
 #[cfg(feature = "std")]
 use std::str::FromStr;
+#[cfg(feature = "std")]
+pub use sp_core::traits::CallMode;
 
 /// A lazy value.
 pub trait Lazy<T: ?Sized> {

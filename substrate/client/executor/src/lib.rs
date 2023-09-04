@@ -44,6 +44,7 @@ pub use self::{
 	wasm_runtime::{read_embedded_version, WasmExecutionMethod},
 };
 pub use codec::Codec;
+pub use sp_core::traits::CallMode;
 #[doc(hidden)]
 pub use sp_core::traits::Externalities;
 pub use sp_version::{NativeVersion, RuntimeVersion};
@@ -53,7 +54,7 @@ pub use sp_wasm_interface;
 pub use sc_executor_common::{
 	error,
 	wasm_runtime::{
-		CallMode, HeapAllocStrategy, DEFAULT_HEAP_ALLOC_PAGES, DEFAULT_HEAP_ALLOC_STRATEGY,
+		HeapAllocStrategy, WasmInstance, DEFAULT_HEAP_ALLOC_PAGES, DEFAULT_HEAP_ALLOC_STRATEGY,
 	},
 };
 pub use sc_executor_wasmtime::InstantiationStrategy as WasmtimeInstantiationStrategy;

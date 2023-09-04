@@ -32,7 +32,7 @@ use sp_api::{
 	ApiExt, ApiRef, Core, ProvideRuntimeApi, StorageChanges, StorageProof, TransactionOutcome,
 };
 use sp_blockchain::{ApplyExtrinsicFailed, Error};
-use sp_core::traits::CallContext;
+use sp_core::traits::{CallContext, CallMode};
 use sp_runtime::{
 	legacy,
 	traits::{Block as BlockT, Hash, HashingFor, Header as HeaderT, NumberFor, One},
@@ -177,6 +177,8 @@ where
 
 		api.set_call_context(CallContext::Onchain);
 
+		api.set_call_mode(CallMode::First);
+
 		api.initialize_block(parent_hash, &header)?;
 
 		let version = api
@@ -201,6 +203,7 @@ where
 		let extrinsics = &mut self.extrinsics;
 		let version = self.version;
 
+		self.api.set_call_mode(CallMode::Next);
 		self.api.execute_in_transaction(|api| {
 			let res = if version < 6 {
 				#[allow(deprecated)]
@@ -292,6 +295,7 @@ mod tests {
 	use super::*;
 	use sp_blockchain::HeaderBackend;
 	use sp_core::Blake2Hasher;
+	use sp_core::traits::CallMode;
 	use sp_state_machine::Backend;
 	use substrate_test_runtime_client::{
 		runtime::ExtrinsicBuilder, DefaultTestClientBuilderExt, TestClientBuilderExt,

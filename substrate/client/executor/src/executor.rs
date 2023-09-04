@@ -19,7 +19,7 @@
 use crate::{
 	error::{Error, Result},
 	wasm_runtime::{RuntimeCache, WasmExecutionMethod},
-	CallMode, RuntimeVersionOf,
+	RuntimeVersionOf,
 };
 
 use std::{
@@ -29,6 +29,7 @@ use std::{
 	sync::Arc,
 };
 
+use parking_lot::Mutex;
 use codec::Encode;
 use sc_executor_common::{
 	runtime_blob::RuntimeBlob,
@@ -36,7 +37,7 @@ use sc_executor_common::{
 		AllocationStats, HeapAllocStrategy, WasmInstance, WasmModule, DEFAULT_HEAP_ALLOC_STRATEGY,
 	},
 };
-use sp_core::traits::{CallContext, CodeExecutor, Externalities, RuntimeCode};
+use sp_core::traits::{CallMode, CallContext, CodeExecutor, Externalities, RuntimeCode};
 use sp_version::{GetNativeVersion, NativeVersion, RuntimeVersion};
 use sp_wasm_interface::{ExtendedHostFunctions, HostFunctions};
 
@@ -211,6 +212,7 @@ impl<H> WasmExecutorBuilder<H> {
 			)),
 			cache_path: self.cache_path,
 			allow_missing_host_functions: self.allow_missing_host_functions,
+			current_instance: Arc::new(Mutex::new(None)),
 			phantom: PhantomData,
 		}
 	}
@@ -234,6 +236,8 @@ pub struct WasmExecutor<H> {
 	cache_path: Option<PathBuf>,
 	/// Ignore missing function imports.
 	allow_missing_host_functions: bool,
+	/// Current instance for multiple execution
+	current_instance: Arc<Mutex<Option<Box<dyn WasmInstance>>>>,
 	phantom: PhantomData<H>,
 }
 
@@ -247,6 +251,7 @@ impl<H> Clone for WasmExecutor<H> {
 			cache: self.cache.clone(),
 			cache_path: self.cache_path.clone(),
 			allow_missing_host_functions: self.allow_missing_host_functions,
+			current_instance: self.current_instance.clone(), // TODO arc clone or try clone??
 			phantom: self.phantom,
 		}
 	}
@@ -298,6 +303,7 @@ where
 			)),
 			cache_path,
 			allow_missing_host_functions: false,
+			current_instance: Arc::new(Mutex::new(None)),
 			phantom: PhantomData,
 		}
 	}
@@ -489,6 +495,7 @@ where
 {
 	type Error = Error;
 
+	// TODO plug mode.
 	fn call(
 		&self,
 		ext: &mut dyn Externalities,
@@ -497,6 +504,7 @@ where
 		data: &[u8],
 		_use_native: bool,
 		context: CallContext,
+		mode: CallMode,
 	) -> (Result<Vec<u8>>, bool) {
 		tracing::trace!(
 			target: "executor",
@@ -653,6 +661,7 @@ impl<D: NativeExecutionDispatch + 'static> CodeExecutor for NativeElseWasmExecut
 		data: &[u8],
 		use_native: bool,
 		context: CallContext,
+		mode: CallMode,
 	) -> (Result<Vec<u8>>, bool) {
 		tracing::trace!(
 			target: "executor",

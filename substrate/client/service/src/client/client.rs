@@ -62,7 +62,7 @@ use sp_core::{
 		well_known_keys, ChildInfo, ChildType, DefaultChild, PrefixedStorageKey, StorageBlob,
 		StorageData, StorageDefaultChild, StorageKey, StorageOrderedMap,
 	},
-	traits::{CallContext, SpawnNamed},
+	traits::{CallContext, CallMode, SpawnNamed},
 };
 use sp_runtime::{
 	generic::{BlockId, SignedBlock},
@@ -99,7 +99,7 @@ where
 	Block: BlockT,
 {
 	backend: Arc<B>,
-	executor: E,
+	pub executor: E, // TODO rem pub and just set callmode from client
 	storage_notifications: StorageNotifications<Block>,
 	import_notification_sinks: NotificationSinks<BlockImportNotification<Block>>,
 	every_import_notification_sinks: NotificationSinks<BlockImportNotification<Block>>,
@@ -1793,6 +1793,7 @@ where
 				params.overlayed_changes,
 				params.recorder,
 				params.call_context,
+				params.call_mode,
 				params.extensions,
 			)
 			.map_err(Into::into)

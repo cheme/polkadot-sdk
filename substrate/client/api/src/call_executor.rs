@@ -22,6 +22,7 @@ use sc_executor::{RuntimeVersion, RuntimeVersionOf};
 use sp_core::traits::CallContext;
 use sp_externalities::Extensions;
 use sp_runtime::traits::Block as BlockT;
+use sp_runtime::traits::CallMode;
 use sp_state_machine::{Changes, StorageProof};
 use std::cell::RefCell;
 
@@ -60,6 +61,7 @@ pub trait CallExecutor<B: BlockT>: RuntimeVersionOf {
 		method: &str,
 		call_data: &[u8],
 		context: CallContext,
+		mode: CallMode,
 	) -> Result<Vec<u8>, sp_blockchain::Error>;
 
 	/// Execute a contextual call on top of state in a block of a given hash.
@@ -75,6 +77,7 @@ pub trait CallExecutor<B: BlockT>: RuntimeVersionOf {
 		changes: &RefCell<Changes<HashingFor<B>>>,
 		proof_recorder: &Option<ProofRecorder<B>>,
 		call_context: CallContext,
+		mode: CallMode,
 		extensions: &RefCell<Extensions>,
 	) -> sp_blockchain::Result<Vec<u8>>;
 
