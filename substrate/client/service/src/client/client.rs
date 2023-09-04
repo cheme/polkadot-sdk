@@ -1247,9 +1247,10 @@ where
 		child_info: Option<&ChildInfo>,
 		start: Option<(&[u8], bool)>,
 		keys: &mut dyn Iterator<Item = (&[u8], bool, bool)>,
-	) -> sp_blockchain::Result<StorageProof> {
+	) -> sp_blockchain::Result<Vec<Vec<u8>>> {
 		self.state_at(hash)
 			.and_then(|state| prove_read_v2(state, child_info, start, keys).map_err(Into::into))
+			.map(|(proof, _)| proof)
 	}
 
 	fn execution_proof(

@@ -50,7 +50,7 @@ pub trait ProofProvider<Block: BlockT> {
 		child_info: Option<&ChildInfo>,
 		start: Option<(&[u8], bool)>,
 		keys: &mut dyn Iterator<Item = (&[u8], bool, bool)>,
-	) -> sp_blockchain::Result<StorageProof>;
+	) -> sp_blockchain::Result<Vec<Vec<u8>>>;
 
 	/// Execute a call to a contract on top of state in a block of given hash
 	/// AND returning execution proof.
