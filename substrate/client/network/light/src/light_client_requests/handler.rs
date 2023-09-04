@@ -155,6 +155,8 @@ where
 				self.on_remote_read_request(&peer, r)?,
 			Some(schema::v1::light::request::Request::RemoteReadChildRequest(r)) =>
 				self.on_remote_read_child_request(&peer, r)?,
+			Some(schema::v1::light::request::Request::RemoteReadRequestV2(r)) =>
+				self.on_remote_read_request_v2(&peer, r)?,
 			None =>
 				return Err(HandleRequestError::BadRequest("Remote request without request data.")),
 		};
@@ -282,6 +284,78 @@ where
 			response: Some(schema::v1::light::response::Response::RemoteReadResponse(response)),
 		})
 	}
+
+	fn on_remote_read_request_v2(
+		&mut self,
+		peer: &PeerId,
+		request: &schema::v1::light::RemoteReadRequestV2,
+	) -> Result<schema::v1::light::Response, HandleRequestError> {
+		if request.keys.is_empty() {
+			debug!("Invalid remote read request sent by {}.", peer);
+			return Err(HandleRequestError::BadRequest("Remote read request without keys."))
+		}
+		let child_info = match request.child_trie_info.as_ref() {
+			Some(n)
+				if n.namespace ==
+					(schema::v1::light::child_trie_info::ChildTrieNamespace::Default as i32) =>
+			{
+				let storage_key =
+					request.child_trie_info.as_ref().expect("has a namespace").name.clone();
+				trace!(
+					"Remote default child trie read request v2 from {} ({} {} at {:?}).",
+					peer,
+					HexDisplay::from(&storage_key),
+					fmt_keys_v2(request.keys.first(), request.keys.last()),
+					request.block,
+				);
+				Some(ChildInfo::new_default(&storage_key[..]))
+			},
+			None => {
+				trace!(
+					"Remote read request v2 from {} ({} at {:?}).",
+					peer,
+					fmt_keys_v2(request.keys.first(), request.keys.last()),
+					request.block,
+				);
+				None
+			},
+			Some(n) => {
+				debug!("Invalid child type {:?} in remote read request sent by {}.", n, peer);
+				return Err(HandleRequestError::BadRequest(
+					"Remote read request with unsupported child type.",
+				))
+			},
+		};
+		let start = request.only_keys_after.as_ref().map(|cursor| {
+			(cursor.as_ref(), request.only_keys_after_ignore_last_nibble.unwrap_or(false))
+		});
+		let block = Decode::decode(&mut request.block.as_ref())?;
+		let response = match self.client.read_child_proof_v2(
+			block,
+			child_info.as_ref(),
+			start,
+			&mut request.keys.iter().map(|key| {
+				(&key.key[..], key.skip_value.unwrap_or(false), key.prefix_iter.unwrap_or(false))
+			}),
+		) {
+			Ok(proof) => schema::v1::light::RemoteReadResponse { proof: Some(proof.encode()) },
+			Err(error) => {
+				trace!(
+					"remote read child request from {} ({:?} {} at {:?}) failed with: {}",
+					peer,
+					child_info,
+					fmt_keys_v2(request.keys.first(), request.keys.last()),
+					request.block,
+					error,
+				);
+				schema::v1::light::RemoteReadResponse { proof: None }
+			},
+		};
+
+		Ok(schema::v1::light::Response {
+			response: Some(schema::v1::light::response::Response::RemoteReadResponse(response)),
+		})
+	}
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -306,6 +380,21 @@ fn fmt_keys(first: Option<&Vec<u8>>, last: Option<&Vec<u8>>) -> String {
 			HexDisplay::from(first).to_string()
 		} else {
 			format!("{}..{}", HexDisplay::from(first), HexDisplay::from(last))
+		}
+	} else {
+		String::from("n/a")
+	}
+}
+
+fn fmt_keys_v2(
+	first: Option<&schema::v1::light::Key>,
+	last: Option<&schema::v1::light::Key>,
+) -> String {
+	if let (Some(first), Some(last)) = (first, last) {
+		if first.key == last.key {
+			HexDisplay::from(&first.key).to_string()
+		} else {
+			format!("{}..{}", HexDisplay::from(&first.key), HexDisplay::from(&last.key))
 		}
 	} else {
 		String::from("n/a")
