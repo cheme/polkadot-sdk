@@ -55,27 +55,27 @@ impl<'a, H: trie_db::Hasher> trie_db::TrieRecorder<H::Out> for SizeOnlyRecorder<
 			TrieAccess::NodeOwned { hash, node_owned } =>
 				if self.seen_nodes.insert(hash) {
 					let node = node_owned.to_encoded::<NodeCodec<H>>();
-					encoded_size_update += node.encoded_size();
-					if encoded_size_update >= 32 {
+					if node.len() >= 32 {
 						// non inline
-						encoded_size_update -= CHILDREN_COMPACT_SAVE_SIZE;
+						encoded_size_update += (&node[CHILDREN_COMPACT_SAVE_SIZE..]).encoded_size();
+					} else {
+						encoded_size_update += node.encoded_size();
 					}
 				},
 			TrieAccess::EncodedNode { hash, encoded_node } =>
 				if self.seen_nodes.insert(hash) {
-					encoded_size_update += encoded_node.encoded_size();
-					if encoded_size_update >= 32 {
+					if encoded_node.len() >= 32 {
 						// non inline
-						encoded_size_update -= CHILDREN_COMPACT_SAVE_SIZE;
+						encoded_size_update += (&encoded_node[CHILDREN_COMPACT_SAVE_SIZE..]).encoded_size();
+					} else {
+						encoded_size_update += encoded_node.encoded_size();
 					}
 				},
 			TrieAccess::Value { hash, value, full_key } => {
 				if self.seen_nodes.insert(hash) {
-					encoded_size_update += value.encoded_size();
-					if encoded_size_update > 32 {
-						// non inline
-						encoded_size_update -= VALUE_COMPACT_SAVE_SIZE;
-					}
+					debug_assert!(value.len() > 32);
+					// non inline
+					encoded_size_update += (&value[VALUE_COMPACT_SAVE_SIZE..]).encoded_size();
 				}
 				self.recorded_keys
 					.entry(full_key.into())
@@ -152,8 +152,9 @@ impl<H: trie_db::Hasher> sp_trie::TrieRecorderProvider<H> for SizeOnlyRecorderPr
 
 impl<H: trie_db::Hasher> ProofSizeProvider for SizeOnlyRecorderProvider<H> {
 	fn estimate_encoded_size(&self) -> usize {
+		//let nb_nodes = *self.seen_nodes.borrow(); TOOD add compact size of it
 		let size = *self.encoded_size.borrow();
-		if size > 1 {
+		if size > 2 {
 			// non empty trie
 			size + INITIAL_ENCODED_SIZE
 		} else {
