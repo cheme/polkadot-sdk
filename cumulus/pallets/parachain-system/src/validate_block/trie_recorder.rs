@@ -290,6 +290,11 @@ mod tests {
 				recorder_for_test.estimate_encoded_size()
 			);
 
+			let proof = reference_recorder.to_storage_proof();
+
+			let size = proof.encoded_compact_size::<sp_core::Blake2Hasher>(root).unwrap();
+			assert_eq!(size, recorder_for_test.estimate_encoded_size());
+
 			recorder_for_test.reset();
 			assert_eq!(recorder_for_test.estimate_encoded_size(), 0)
 		}
