@@ -125,6 +125,15 @@ impl StorageProof {
 	/// Return `None` on error.
 	pub fn encoded_compact_size<H: Hasher>(self, root: H::Out) -> Option<usize> {
 		let compact_proof = self.into_compact_proof::<H>(root);
+		println!("st {:?}", compact_proof.as_ref().unwrap().encoded_nodes.len());
+		// TODO rem: only for debug
+		for (i, n) in compact_proof.as_ref().unwrap().encoded_nodes.iter().enumerate() {
+			for n2 in compact_proof.as_ref().unwrap().encoded_nodes[i + 1..].iter() {
+				if n == n2 {
+					println!("dup: {:?}", n.len());
+				}
+			}
+		}
 		compact_proof.ok().map(|p| p.encoded_size())
 	}
 }

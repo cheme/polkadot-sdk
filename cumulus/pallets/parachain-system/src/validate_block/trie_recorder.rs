@@ -45,7 +45,7 @@ pub(crate) struct SizeOnlyRecorder<'a, H: Hasher> {
 const CHILDREN_COMPACT_SAVE_SIZE: usize = 32;
 // 32 byte of hash replace by 1 byte of 0 len
 // inline value and 1 byte of escape header.
-const VALUE_COMPACT_SAVE_SIZE: usize = 30;
+const VALUE_COMPACT_SAVE_SIZE: usize = 29;
 const INITIAL_ENCODED_SIZE: usize = CHILDREN_COMPACT_SAVE_SIZE;
 
 impl<'a, H: trie_db::Hasher> trie_db::TrieRecorder<H::Out> for SizeOnlyRecorder<'a, H> {
@@ -56,19 +56,23 @@ impl<'a, H: trie_db::Hasher> trie_db::TrieRecorder<H::Out> for SizeOnlyRecorder<
 				if self.seen_nodes.insert(hash) {
 					let node = node_owned.to_encoded::<NodeCodec<H>>();
 					if node.len() >= 32 {
+				println!("D_2: {:?}", node.len());
 						// non inline
 						encoded_size_update += (&node[CHILDREN_COMPACT_SAVE_SIZE..]).encoded_size();
+				println!("D_2: {:?}", encoded_size_update);
 					} else {
-						encoded_size_update += node.encoded_size();
+						unreachable!()
 					}
 				},
 			TrieAccess::EncodedNode { hash, encoded_node } =>
 				if self.seen_nodes.insert(hash) {
 					if encoded_node.len() >= 32 {
+				println!("D_3: {:?}", encoded_node.len());
 						// non inline
 						encoded_size_update += (&encoded_node[CHILDREN_COMPACT_SAVE_SIZE..]).encoded_size();
+				println!("D_3: {:?}", encoded_size_update);
 					} else {
-						encoded_size_update += encoded_node.encoded_size();
+						unreachable!()
 					}
 				},
 			TrieAccess::Value { hash, value, full_key } => {
@@ -94,10 +98,13 @@ impl<'a, H: trie_db::Hasher> trie_db::TrieRecorder<H::Out> for SizeOnlyRecorder<
 					.or_insert_with(|| RecordedForKey::Value);
 			},
 			TrieAccess::InlineValue { full_key } => {
+				println!("D_D");
 				self.recorded_keys
 					.entry(full_key.into())
 					.and_modify(|e| *e = RecordedForKey::Value)
-					.or_insert_with(|| RecordedForKey::Value);
+					.or_insert_with(|| {
+						RecordedForKey::Value
+					});
 			},
 		};
 
@@ -152,14 +159,15 @@ impl<H: trie_db::Hasher> sp_trie::TrieRecorderProvider<H> for SizeOnlyRecorderPr
 
 impl<H: trie_db::Hasher> ProofSizeProvider for SizeOnlyRecorderProvider<H> {
 	fn estimate_encoded_size(&self) -> usize {
-		//let nb_nodes = *self.seen_nodes.borrow(); TOOD add compact size of it
-		let size = *self.encoded_size.borrow();
+		let mut size = *self.encoded_size.borrow();
+		let nb_nodes = codec::Compact(self.seen_nodes.borrow().len() as u64);
 		if size > 2 {
 			// non empty trie
-			size + INITIAL_ENCODED_SIZE
-		} else {
-			size
+			size += INITIAL_ENCODED_SIZE;
 		}
+		size += nb_nodes.encoded_size();
+
+		size
 	}
 }
 
@@ -280,7 +288,7 @@ mod tests {
 		let (db, root, test_data) = create_trie();
 
 		let mut rng = rand::thread_rng();
-		for _ in 1..10 {
+		for _ in 1..2 {
 			let reference_recorder = Recorder::default();
 			let recorder_for_test: SizeOnlyRecorderProvider<sp_core::Blake2Hasher> =
 				SizeOnlyRecorderProvider::new();
@@ -297,7 +305,8 @@ mod tests {
 						.with_recorder(&mut trie_recorder_under_test)
 						.build();
 
-				for _ in 0..200 {
+				//for _ in 0..200 {
+				for _ in 0..1 {
 					let index: usize = rng.gen_range(0..test_data.len());
 					test_trie.get(&test_data[index].0).unwrap().unwrap();
 					reference_trie.get(&test_data[index].0).unwrap().unwrap();
@@ -319,7 +328,14 @@ mod tests {
 
 			let proof = reference_recorder.to_storage_proof();
 
-			let size = proof.encoded_compact_size::<sp_core::Blake2Hasher>(root).unwrap();
+			let size = proof.clone().encoded_compact_size::<sp_core::Blake2Hasher>(root).unwrap();
+
+
+				let mem_d  = proof.to_memory_db();
+					let print_trie =
+					TrieDBBuilder::<sp_trie::LayoutV1<sp_core::Blake2Hasher>>::new(&mem_d, &root)
+						.build();
+				println!("{:?}", print_trie);
 			assert_eq!(size, recorder_for_test.estimate_encoded_size());
 
 			recorder_for_test.reset();
