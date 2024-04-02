@@ -1224,13 +1224,20 @@ pub fn apply_tree_commit<H: Hash>(
 	state_capabilities: StateCapabilities,
 	tx: &mut Transaction<DbHash>,
 ) {
-	fn convert<H: Hash>(node: sp_trie::Changeset<H::Out, DBLocation>) -> sp_database::NodeRef {
+	fn convert<H: Hash>(node: sp_trie::Changeset<H::Out, DBLocation>, removed: &mut Vec<DBLocation>) -> sp_database::NodeRef {
 		match node {
-			sp_trie::Changeset::Existing(node) => sp_database::NodeRef::Existing(node.location),
-			sp_trie::Changeset::New(node) => sp_database::NodeRef::New(sp_database::NewNode {
-				data: node.data,
-				children: node.children.into_iter().map(|c| convert::<H>(c)).collect(),
-			}),
+			sp_trie::Changeset::Unchanged(node) => sp_database::NodeRef::Existing(node.location),
+			sp_trie::Changeset::New(node) => {
+				if let Some((_, node_removed)) = node.removed_keys {
+					for (_, _, a) in node_removed {
+						removed.push(a);
+					}
+				}
+				sp_database::NodeRef::New(sp_database::NewNode {
+					data: node.data,
+					children: node.children.into_iter().map(|c| convert::<H>(c, removed)).collect(),
+				})
+			},
 		}
 	}
 
@@ -1238,12 +1245,16 @@ pub fn apply_tree_commit<H: Hash>(
 		StateCapabilities::TreeColumn => {
 			let hash = commit.root_hash();
 			match commit {
-				sp_trie::Changeset::Existing(node) => {
+				sp_trie::Changeset::Unchanged(node) => {
 					tx.reference_tree(columns::STATE, DbHash::from_slice(node.hash.as_ref()));
 				},
 				new_node @ sp_trie::Changeset::New(_) => {
-					if let sp_database::NodeRef::New(n) = convert::<H>(new_node) {
-						tx.insert_tree(columns::STATE, DbHash::from_slice(hash.as_ref()), n);
+					let mut removed = Vec::new();
+					if let sp_database::NodeRef::New(n) = convert::<H>(new_node, &mut removed) {
+						tx.insert_tree(columns::STATE, DbHash::from_slice(hash.as_ref()), sp_database::NewTree {
+							root: sp_database::NodeRef::New(n),
+							removed,
+						});
 					}
 				},
 			}
@@ -3153,7 +3164,7 @@ pub(crate) mod tests {
 				prefix: Default::default(),
 				data: data.to_vec(),
 				children: Default::default(),
-				removed_keys: Some((None, vec![(key.into(), Default::default())])),
+				removed_keys: Some((None, vec![(key.into(), Default::default(), 0)])),
 			});
 			op.set_block_data(header, Some(vec![]), None, None, NewBlockState::Best)
 				.unwrap();
@@ -3201,7 +3212,7 @@ pub(crate) mod tests {
 				prefix: Default::default(),
 				data: Default::default(),
 				children: Default::default(),
-				removed_keys: Some((None, vec![(key.into(), Default::default())])),
+				removed_keys: Some((None, vec![(key.into(), Default::default(), 0)])),
 			});
 
 			op.set_block_data(header, Some(vec![]), None, None, NewBlockState::Best)

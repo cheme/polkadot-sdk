@@ -54,7 +54,7 @@ use trie_db::proof::{generate_proof, verify_proof};
 pub use trie_db::{
 	nibble_ops,
 	node::{NodePlan, ValuePlan},
-	CError, Changeset, DBValue, ExistingChangesetNode, Location, NewChangesetNode, Query, Recorder,
+	CError, Changeset, NewChangesetNode, DBValue, Location, Query, Recorder,
 	Trie, TrieCache, TrieConfiguration, TrieDBIterator, TrieDBKeyIterator, TrieDBRawIterator,
 	TrieLayout, TrieRecorder,
 };
