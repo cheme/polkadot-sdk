@@ -636,5 +636,4 @@ yamux = { opt-level = 3 }
 zeroize = { opt-level = 3 }
 
 [patch.crates-io]
-#parity-db = { git = "https://github.com/cheme/parity-db.git", branch = "split_files" }
-parity-db = { path = "/home/emeric/work/parity-db" }
+parity-db = { git = "https://github.com/cheme/parity-db.git", branch = "split_files" }
