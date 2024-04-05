@@ -634,3 +634,7 @@ wasmi = { opt-level = 3 }
 x25519-dalek = { opt-level = 3 }
 yamux = { opt-level = 3 }
 zeroize = { opt-level = 3 }
+
+[patch.crates-io]
+#parity-db = { git = "https://github.com/cheme/parity-db.git", branch = "split_files" }
+parity-db = { path = "/home/emeric/work/parity-db" }

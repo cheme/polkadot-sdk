@@ -41,6 +41,7 @@ pub fn open<H: Clone + AsRef<[u8]>>(
 	upgrade: bool,
 ) -> parity_db::Result<std::sync::Arc<dyn Database<H>>> {
 	let mut config = parity_db::Options::with_columns(path, NUM_COLUMNS as u8);
+	config.max_file_size = Some(128);
 
 	match db_type {
 		DatabaseType::Full => {

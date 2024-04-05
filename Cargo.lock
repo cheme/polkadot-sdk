@@ -11438,7 +11438,7 @@ checksum = "4e69bf016dc406eff7d53a7d3f7cf1c2e72c82b9088aac1118591e36dd2cd3e9"
 dependencies = [
  "bitcoin_hashes 0.13.0",
  "rand",
- "rand_core 0.6.4",
+ "rand_core 0.5.1",
  "serde",
  "unicode-normalization",
 ]
@@ -11451,9 +11451,7 @@ checksum = "16b56e3a2420138bdb970f84dfb9c774aea80fa0e7371549eedec0d80c209c67"
 
 [[package]]
 name = "parity-db"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59e9ab494af9e6e813c72170f0d3c1de1500990d62c97cc05cc7576f91aa402f"
+version = "0.4.13"
 dependencies = [
  "blake2 0.10.6",
  "crc32fast",
@@ -11467,6 +11465,7 @@ dependencies = [
  "rand",
  "siphasher",
  "snap",
+ "winapi",
 ]
 
 [[package]]
