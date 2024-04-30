@@ -23,7 +23,7 @@ mod mem;
 
 pub use crate::kvdb::as_database;
 pub use mem::MemDb;
-pub use parity_db::{NewNode, NodeAddress, NodeRef};
+pub use parity_db::{NodeAddress, NodeRef, ChangeSet, NewNode};
 
 /// An identifier for a column.
 pub type ColumnId = u32;
@@ -48,7 +48,7 @@ pub enum Change<H> {
 #[derive(Default)]
 pub struct Transaction<H>(pub Vec<Change<H>>);
 
-pub type NewTree = parity_db::NewNode;
+pub type NewTree = ChangeSet;
 
 impl<H> Transaction<H> {
 	/// Create a new transaction to be prepared and committed atomically.
