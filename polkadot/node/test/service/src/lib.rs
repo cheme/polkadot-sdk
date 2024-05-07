@@ -79,24 +79,52 @@ pub fn new_full<OverseerGenerator: OverseerGen>(
 ) -> Result<NewFull, Error> {
 	let workers_path = Some(workers_path.unwrap_or_else(get_relative_workers_path_for_test));
 
-	polkadot_service::new_full(
-		config,
-		polkadot_service::NewFullParams {
-			is_parachain_node,
-			enable_beefy: true,
-			force_authoring_backoff: false,
-			jaeger_agent: None,
-			telemetry_worker_handle: None,
-			node_version: None,
-			secure_validator_mode: false,
-			workers_path,
-			workers_names: None,
-			overseer_gen,
-			overseer_message_channel_capacity_override: None,
-			malus_finality_delay: None,
-			hwbench: None,
-		},
-	)
+	match config.network.network_backend {
+		sc_network::config::NetworkBackendType::Libp2p =>
+			polkadot_service::new_full::<_, sc_network::NetworkWorker<_, _>>(
+				config,
+				polkadot_service::NewFullParams {
+					is_parachain_node,
+					enable_beefy: true,
+					force_authoring_backoff: false,
+					jaeger_agent: None,
+					telemetry_worker_handle: None,
+					node_version: None,
+					secure_validator_mode: false,
+					workers_path,
+					workers_names: None,
+					overseer_gen,
+					overseer_message_channel_capacity_override: None,
+					malus_finality_delay: None,
+					hwbench: None,
+					execute_workers_max_num: None,
+					prepare_workers_hard_max_num: None,
+					prepare_workers_soft_max_num: None,
+				},
+			),
+		sc_network::config::NetworkBackendType::Litep2p =>
+			polkadot_service::new_full::<_, sc_network::Litep2pNetworkBackend>(
+				config,
+				polkadot_service::NewFullParams {
+					is_parachain_node,
+					enable_beefy: true,
+					force_authoring_backoff: false,
+					jaeger_agent: None,
+					telemetry_worker_handle: None,
+					node_version: None,
+					secure_validator_mode: false,
+					workers_path,
+					workers_names: None,
+					overseer_gen,
+					overseer_message_channel_capacity_override: None,
+					malus_finality_delay: None,
+					hwbench: None,
+					execute_workers_max_num: None,
+					prepare_workers_hard_max_num: None,
+					prepare_workers_soft_max_num: None,
+				},
+			),
+	}
 }
 
 fn get_relative_workers_path_for_test() -> PathBuf {
@@ -130,6 +158,7 @@ pub fn node_config(
 	key: Sr25519Keyring,
 	boot_nodes: Vec<MultiaddrWithPeerId>,
 	is_validator: bool,
+	multi_tree: bool,
 ) -> Configuration {
 	let base_path = BasePath::new_temp_dir().expect("could not create temporary directory");
 	let root = base_path.path().join(key.to_string());
@@ -167,9 +196,11 @@ pub fn node_config(
 		transaction_pool: Default::default(),
 		network: network_config,
 		keystore: KeystoreConfig::InMemory,
-		//database: DatabaseSource::RocksDb { path: root.join("db"), cache_size: 128 }, // TODO
-		// restore rocksdb?
-		database: DatabaseSource::ParityDb { path: root.join("db"), multi_tree: true },
+		database: if multi_tree {
+			DatabaseSource::ParityDb { path: root.join("db"), multi_tree: true }
+		} else {
+			DatabaseSource::RocksDb { path: root.join("db"), cache_size: 128 }
+		},
 		trie_cache_maximum_size: Some(64 * 1024 * 1024),
 		state_pruning: Default::default(),
 		blocks_pruning: BlocksPruning::KeepFinalized,
@@ -248,7 +279,7 @@ pub fn run_collator_node(
 	boot_nodes: Vec<MultiaddrWithPeerId>,
 	collator_pair: CollatorPair,
 ) -> PolkadotTestNode {
-	let config = node_config(storage_update_func, tokio_handle, key, boot_nodes, false);
+	let config = node_config(storage_update_func, tokio_handle, key, boot_nodes, false, false);
 	let multiaddr = config.network.listen_addresses[0].clone();
 	let NewFull { task_manager, client, network, rpc_handlers, overseer_handle, .. } = new_full(
 		config,

@@ -64,9 +64,7 @@ fn new_node(tokio_handle: Handle) -> node_cli::service::NewFullBase {
 		},
 		network: network_config,
 		keystore: KeystoreConfig::InMemory,
-		//database: DatabaseSource::RocksDb { path: root.join("db"), cache_size: 128 }, TODO
-		// restore rocksdb ??
-		database: DatabaseSource::ParityDb { path: root.join("db"), multi_tree: true },
+		database: DatabaseSource::RocksDb { path: root.join("db"), cache_size: 128 },
 		trie_cache_maximum_size: Some(64 * 1024 * 1024),
 		state_pruning: Some(PruningMode::ArchiveAll),
 		blocks_pruning: BlocksPruning::KeepAll,
@@ -103,7 +101,13 @@ fn new_node(tokio_handle: Handle) -> node_cli::service::NewFullBase {
 	};
 
 	tokio_handle.block_on(async move {
-		node_cli::service::new_full_base(config, None, false, |_, _| ()).expect("Creates node")
+		node_cli::service::new_full_base::<sc_network::NetworkWorker<_, _>>(
+			config,
+			None,
+			false,
+			|_, _| (),
+		)
+		.expect("Creates node")
 	})
 }
 

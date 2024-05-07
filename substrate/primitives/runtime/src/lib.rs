@@ -91,6 +91,7 @@ mod runtime_string;
 pub mod testing;
 pub mod traits;
 pub mod transaction_validity;
+pub mod type_with_default;
 
 pub use crate::runtime_string::*;
 
@@ -1108,7 +1109,7 @@ mod tests {
 		ext.insert(b"c".to_vec(), vec![3u8; 33]);
 		ext.insert(b"d".to_vec(), vec![4u8; 33]);
 
-		let pre_root = *ext.backend.root();
+		let pre_root = ext.backend.root().0;
 		let (_, proof) = ext.execute_and_prove(|| {
 			sp_io::storage::get(b"a");
 			sp_io::storage::get(b"b");

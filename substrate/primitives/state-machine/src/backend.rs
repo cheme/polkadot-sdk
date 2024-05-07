@@ -28,9 +28,6 @@ use sp_core::storage::{ChildInfo, StateVersion, TrackedStorageKey};
 use sp_core::traits::RuntimeCode;
 use trie_db::node_db::Hasher;
 
-// TODO should parameterized location from db
-// as we currently add overhead to rocksdb and old paritydb in the
-// struct size (not that much , not a priority)
 /// DB location hint for a trie node.
 pub type DBLocation = sp_trie::DBLocation;
 use sp_trie::{ChildChangeset, MerkleValue};
@@ -308,7 +305,11 @@ pub trait Backend<H: Hasher>: core::fmt::Debug {
 				self.child_storage_root(child_info, child_delta, state_version);
 			let prefixed_storage_key = child_info.prefixed_storage_key();
 			if empty {
-				child_roots.push((prefixed_storage_key.into_inner(), None, Some(child_commit.change)));
+				child_roots.push((
+					prefixed_storage_key.into_inner(),
+					None,
+					Some(child_commit.change),
+				));
 			} else {
 				let root = child_commit.root_hash();
 				child_roots.push((
